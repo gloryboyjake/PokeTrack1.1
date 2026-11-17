@@ -478,7 +478,8 @@ def search_products(retailer):
   u,title=item
   try:
    page=retailer_get(u,headers=HEADERS,timeout=8)
-   if re.search(r"robot or human|captcha|verify you are human|access denied|unusual traffic",page.text[:30000],re.I):
+   if (not page.ok) or re.search(r"robot or human|captcha|verify you are human|access denied|unusual traffic",page.text[:30000],re.I):
+    log.info("Using Jina Reader fallback for %s (HTTP %s)",u,page.status_code)
     reader_page=jina_read_url(u,timeout=8)
     if reader_page: page=reader_page
    return item,page
