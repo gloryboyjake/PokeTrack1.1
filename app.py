@@ -505,6 +505,9 @@ def search_products(retailer):
     title=og["content"][:250]
    elif ps.title:
     title=ps.title.get_text(" ",strip=True)[:250]
+   elif "URL Source:" in page.text:
+    heading=re.search(r"^#\s+(.+)$",page.text,re.M)
+    title=heading.group(1).strip()[:250] if heading else ""
    else:
     title=""
    for sel in ['meta[property="product:price:amount"]','meta[itemprop="price"]']:
@@ -618,9 +621,9 @@ def scan_store_inventory():
  return {"confirmed_products":confirmed,"message":f"Directly checked retailer product pages for {checked} branches; {confirmed} product/branch matches explicitly reported in stock. {errors} page requests failed. No search-engine snippets or guessed stock were used."}
 def run_scan(kind):
  global JINA_CALLS
- JINA_CALLS=0
  if not SCAN_LOCK.acquire(blocking=False):
   return {"status":"busy","message":"A scan is already running. Please wait for it to finish."},409
+ JINA_CALLS=0
  try:
   c=conn(); cur=c.execute("INSERT INTO poketrack_scan_runs(kind,started_at,status) VALUES(?,?,?)",(kind,now(),"running")); rid=cur.lastrowid;c.commit();c.close()
  except Exception:
