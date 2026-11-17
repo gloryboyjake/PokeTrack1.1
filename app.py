@@ -166,9 +166,14 @@ def verify_retailer_seller(retailer, page_text):
  text=(page_text or "").lower()
  if retailer in ("Target","Walmart","Best Buy"):
   aliases={"Target":"target","Walmart":"walmart","Best Buy":"best buy"}
-  return (True,retailer) if re.search(r"(?:sold by|sold and shipped by|sold & shipped by)\s*"+re.escape(aliases[retailer]),text) else (False,None)
- if "marketplace seller" in text or "third-party seller" in text: return False,None
+  alias=aliases[retailer]
+  explicit=re.search(r"(?:sold by|sold and shipped by|sold & shipped by)\s*[:\-]?\s*"+re.escape(alias),text)
+  json_seller=re.search(r'"(?:sellername|seller_name|merchantname|merchant_name)"\s*:\s*"' + re.escape(alias) + r'(?:\.com)?"',text)
+  if explicit or json_seller: return True,retailer
+  return False,None
+ if re.search(r"marketplace seller|third.party seller|sold by a third party|sold by marketplace",text): return False,None
  return True,retailer
+
 def popularity_for(title, page_text):
  t=(title or "").lower(); body=(page_text or "").lower(); score=0; reason=[]
  for pts,term in [(35,"30th celebration"),(32,"ascended heroes"),(30,"chaos rising"),(28,"pitch black"),(26,"prismatic evolutions"),(22,"pokemon day 2026"),(20,"first partner illustration"),(18,"delta reign"),(15,"mega evolution")]:
