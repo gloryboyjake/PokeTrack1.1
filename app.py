@@ -1,5 +1,5 @@
 import os, re, json, math, time, sqlite3, logging, threading
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from urllib.parse import urlparse, urlunparse, parse_qs, unquote
 import requests
@@ -367,7 +367,7 @@ def retailer_product_url_is_valid(retailer,url):
  if path.startswith(("/search","/s/","/q/","/c/","/category/","/browse/")): return False
  return True
 
-def search_products(retailer):
+def search_products(retailer, progress_callback=None):
  global GOOGLE_RATE_LIMITED
  catalog=direct_catalog_url(retailer)
  domain=RETAILERS[retailer][0]
@@ -393,6 +393,7 @@ def search_products(retailer):
     page_url=page_urls.pop(0)
     if page_url in seen_pages: continue
     seen_pages.add(page_url)
+    if progress_callback: progress_callback(0.05+0.25*len(seen_pages)/30,f"{retailer}: reading catalog page {len(seen_pages)} (up to 30)")
     r=browser_get(page_url,timeout=30)
     r.raise_for_status()
     soup=BeautifulSoup(r.text,"html.parser")
@@ -510,8 +511,14 @@ def search_products(retailer):
   except Exception as e:
    log.debug("Retailer product fetch failed for %s: %s",u,e)
    return item,None
+ fetched=[]
+ if progress_callback: progress_callback(0.35,f"{retailer}: found {len(candidates)} product pages; checking availability")
  with ThreadPoolExecutor(max_workers=6) as pool:
-  fetched=list(pool.map(fetch_candidate,candidates))
+  futures={pool.submit(fetch_candidate,item):item for item in candidates}
+  for completed,future in enumerate(as_completed(futures),1):
+   try: fetched.append(future.result())
+   except Exception: fetched.append((futures[future],None))
+   if progress_callback: progress_callback(0.35+0.55*completed/max(1,len(candidates)),f"{retailer}: checked {completed} of {len(candidates)} product pages")
  log.info("%s: checking %s retailer product pages from %s discovered candidates",retailer,len(candidates),len(found))
  for (candidate_index,((u,title),page)) in enumerate(fetched,1):
   try:
@@ -715,7 +722,11 @@ def run_scan(kind):
     phase_pct=(10+int(idx*60/len(retailer_names))) if kind=="all" else int(idx*95/len(retailer_names))
     update_scan_progress(rid,phase_pct-1,f"Scanning {retailer} product listings",idx-1,len(retailer_names))
     try:
-     n=len(search_products(retailer));total+=n;notes.append(f"{retailer}: {n} product pages")
+     def retailer_progress(fraction,detail):
+      bounded=max(0.0,min(0.99,float(fraction)))
+      pct=10+int(60*(idx-1+bounded)/len(retailer_names)) if kind=="all" else int(95*(idx-1+bounded)/len(retailer_names))
+      update_scan_progress(rid,pct,detail,idx-1,len(retailer_names))
+     n=len(search_products(retailer,progress_callback=retailer_progress));total+=n;notes.append(f"{retailer}: {n} product pages")
     except Exception as e: notes.append(f"{retailer}: {str(e)[:100]}")
     update_scan_progress(rid,phase_pct,f"Scanned {retailer} product listings",idx,len(retailer_names))
   if kind in ("all","inventory"):
