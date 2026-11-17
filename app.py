@@ -471,6 +471,9 @@ def search_products(retailer):
     n=ps.select_one(sel)
     if n and n.get("content"): price=n["content"]; break
    else: price=None
+   if not price:
+    price_match=re.search(r"\$\s*(\d{1,4}(?:,\d{3})*(?:\.\d{2})?)",page_text)
+    if price_match: price=price_match.group(1).replace(",","")
    if not is_pokemon_tcg_title(title):
     log.info("%s candidate %s rejected: page title not a Pokémon TCG product (%s)",retailer,candidate_index,title[:100])
     continue
