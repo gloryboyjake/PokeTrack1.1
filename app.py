@@ -66,51 +66,97 @@ BROWSER_LOCK=threading.RLock()
 BROWSER_MANAGER=None
 BROWSER_INSTANCE=None
 BROWSER_CONTEXT=None
-def browser_get(url, timeout=25, store=None):
- # Reuse one genuine Chromium session for the scan; navigate actual retailer pages
- # and use visible store controls. No fingerprint spoofing or access-control bypass.
+BROWSER_PAGE_COUNT=0
+
+def _close_browser():
+ global BROWSER_MANAGER,BROWSER_INSTANCE,BROWSER_CONTEXT,BROWSER_PAGE_COUNT
+ try:
+  if BROWSER_CONTEXT is not None: BROWSER_CONTEXT.close()
+ except Exception: pass
+ try:
+  if BROWSER_INSTANCE is not None: BROWSER_INSTANCE.close()
+ except Exception: pass
+ try:
+  if BROWSER_MANAGER is not None: BROWSER_MANAGER.stop()
+ except Exception: pass
+ BROWSER_MANAGER=None; BROWSER_INSTANCE=None; BROWSER_CONTEXT=None; BROWSER_PAGE_COUNT=0
+
+def _start_browser():
  global BROWSER_MANAGER,BROWSER_INSTANCE,BROWSER_CONTEXT
  from playwright.sync_api import sync_playwright
+ BROWSER_MANAGER=sync_playwright().start()
+ BROWSER_INSTANCE=BROWSER_MANAGER.chromium.launch(headless=True,args=[
+  "--no-sandbox","--disable-dev-shm-usage","--disable-gpu",
+  "--disable-background-networking","--disable-extensions",
+  "--disable-features=Translate,BackForwardCache"
+ ])
+ BROWSER_CONTEXT=BROWSER_INSTANCE.new_context(
+  locale="en-US",timezone_id="America/New_York",
+  viewport={"width":1280,"height":800},device_scale_factor=1,
+  java_script_enabled=True)
+ log.info("Lightweight Chromium session started")
+
+def browser_get(url, timeout=25, store=None):
+ # One lightweight page at a time. Drop expensive assets and recycle the
+ # browser periodically so retailer pages cannot accumulate renderer memory.
+ global BROWSER_MANAGER,BROWSER_INSTANCE,BROWSER_CONTEXT,BROWSER_PAGE_COUNT
  from types import SimpleNamespace
  with BROWSER_LOCK:
+  if BROWSER_INSTANCE is not None:
+   try:
+    if not BROWSER_INSTANCE.is_connected(): _close_browser()
+   except Exception: _close_browser()
   if BROWSER_INSTANCE is None:
-   BROWSER_MANAGER=sync_playwright().start()
-   BROWSER_INSTANCE=BROWSER_MANAGER.chromium.launch(headless=True,args=["--no-sandbox"])
-   BROWSER_CONTEXT=BROWSER_INSTANCE.new_context(locale="en-US",timezone_id="America/New_York",viewport={"width":1365,"height":900})
-  page=BROWSER_CONTEXT.new_page()
+   try: _start_browser()
+   except Exception:
+    _close_browser()
+    raise
+  if BROWSER_PAGE_COUNT>=8:
+   log.info("Recycling Chromium after %s product pages",BROWSER_PAGE_COUNT)
+   _close_browser(); _start_browser()
+  page=None
   try:
+   page=BROWSER_CONTEXT.new_page()
+   page.set_default_timeout(min(8000,timeout*1000))
+   page.route("**/*",lambda route: route.abort() if route.request.resource_type in ("image","font","media") else route.continue_())
    response=page.goto(url,wait_until="domcontentloaded",timeout=timeout*1000)
-   try: page.wait_for_load_state("networkidle",timeout=min(7000,timeout*1000))
-   except Exception: pass
    if store and "target.com" in (urlparse(url).hostname or ""):
     try:
      for label in ("Change store","Choose store","Edit store","My store"):
       locator=page.get_by_text(label,exact=False).first
       if locator.count():
-       locator.click(timeout=1500); page.wait_for_timeout(600); break
+       locator.click(timeout=1200); break
      fields=page.locator("input:visible")
-     for idx in range(min(fields.count(),8)):
+     for idx in range(min(fields.count(),6)):
       field=fields.nth(idx)
       hint=((field.get_attribute("placeholder") or "")+" "+(field.get_attribute("aria-label") or "")).lower()
       if any(x in hint for x in ("zip","city","state","location","store")):
-       field.fill(str(store.get("postcode") or store.get("city") or "")); page.wait_for_timeout(1000)
+       field.fill(str(store.get("postcode") or store.get("city") or ""))
+       page.wait_for_timeout(500)
        target_label=store.get("name") or store.get("city") or ""
        option=page.get_by_text(target_label,exact=False).last
-       if option.count(): option.click(timeout=1800); page.wait_for_timeout(600)
+       if option.count(): option.click(timeout=1200)
        for action in ("Save","Use this store","Select store","Set as my store","Confirm"):
         btn=page.get_by_role("button",name=re.compile(action,re.I)).first
         if btn.count():
-         btn.click(timeout=1400); page.wait_for_timeout(900); break
+         btn.click(timeout=1200); break
        break
     except Exception as e:
      log.info("Visible store selection not completed for %s: %s",store.get("name"),str(e)[:120])
-   page.wait_for_timeout(700)
-   page.evaluate("window.scrollTo(0, Math.min(document.body.scrollHeight, 800))")
-   page.wait_for_timeout(350)
-   html=page.content(); status=response.status if response else 200; final_url=page.url
-   return SimpleNamespace(ok=status<400,status_code=status,text=html,url=final_url,raise_for_status=lambda: (_ for _ in ()).throw(requests.HTTPError(f"HTTP {status} for {final_url}")) if status>=400 else None)
+   html=page.content()
+   status=response.status if response else 200
+   final_url=page.url
+   BROWSER_PAGE_COUNT+=1
+   return SimpleNamespace(ok=status<400,status_code=status,text=html,url=final_url,
+    raise_for_status=lambda: (_ for _ in ()).throw(requests.HTTPError(f"HTTP {status} for {final_url}")) if status>=400 else None)
+  except Exception as e:
+   log.warning("Chromium page failed for %s: %s; restarting browser",url[:160],str(e)[:180])
+   _close_browser()
+   raise
   finally:
-   page.close()
+   if page is not None:
+    try: page.close()
+    except Exception: pass
 
 RETAILERS={
  "Target":["target.com"],"Walmart":["walmart.com"],"Best Buy":["bestbuy.com"],
