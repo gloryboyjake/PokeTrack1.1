@@ -115,9 +115,14 @@ def clean_url(u):
  u=unquote(u or "")
  if u.startswith("/url?"): u=parse_qs(urlparse(u).query).get("q",[""])[0]
  p=urlparse(u)
+ if p.hostname and ("google." in p.hostname or p.hostname.endswith(".google.com")):
+  params=parse_qs(p.query)
+  u=(params.get("q") or params.get("url") or params.get("adurl") or [""])[0]
+  p=urlparse(u)
  if p.scheme not in ("http","https") or not p.netloc:return None
  if p.hostname and ("google." in p.hostname or "bing.com" in p.hostname):return None
  return urlunparse((p.scheme,p.netloc,p.path,"","",""))
+
 def direct_catalog_url(retailer):
  # Public retailer catalog/search pages; no search-engine result pages or paid APIs.
  urls={
@@ -191,31 +196,55 @@ def search_products(retailer):
     except Exception: pass
   except requests.RequestException as e:
    log.warning("Direct catalog unavailable for %s: %s; using public search fallback",retailer,e)
- # Search-engine discovery is not an API and does not establish stock. Every
- # candidate must still resolve to a real product page on the retailer domain.
- q=f'site:{domain} Pokémon trading cards OR Pokémon TCG OR Pokémon booster OR Elite Trainer Box'
+ # Free Google Shopping plus normal web results. Search results only discover
+ # candidates; seller identity is checked on each retailer product page below.
+ searches=[
+  ("shopping",f"Pokemon cards {retailer}"),
+  ("shopping",f"Pokemon trading cards {retailer}"),
+  ("web",f"site:{domain} Pokemon TCG booster ETB tin"),
+  ("web",f"site:{domain} Pokemon 30th anniversary OR Ascended Heroes OR Mega Evolution OR Chaos Rising OR Pitch Black OR Prismatic Evolutions OR Delta Reign")
+ ]
  search_found={}
- try:
-  r=requests.get("https://www.google.com/search",params={"q":q,"num":30},headers=HEADERS,timeout=20)
-  if r.status_code==429: raise requests.HTTPError("Google rate limited this server (HTTP 429)")
-  r.raise_for_status()
-  soup=BeautifulSoup(r.text,"html.parser")
-  for a in soup.select("a[href]"):
-   u=clean_url(a.get("href")); title=a.get_text(" ",strip=True)
-   if u and retailer_domain_match(u,domain) and title and is_pokemon_tcg_title(title):
-    search_found[u]=title[:250]
- except requests.RequestException as e:
-  log.warning("Google search unavailable for %s: %s",retailer,e)
+ google_blocked=False
+ for mode,q in searches:
+  try:
+   params={"tbm":"shop","num":40,"q":q} if mode=="shopping" else {"num":40,"q":q}
+   r=requests.get("https://www.google.com/search",params=params,headers=HEADERS,timeout=20)
+   if r.status_code==429: raise requests.HTTPError("Google rate limited this server (HTTP 429)")
+   r.raise_for_status()
+   html=r.text
+   if re.search(r"unusual traffic|not a robot|captcha|consent\\.google\\.com",html[:30000],re.I):
+    google_blocked=True
+    raise requests.HTTPError("Google presented an automated-traffic or consent page")
+   soup=BeautifulSoup(html,"html.parser")
+   for a in soup.select("a[href]"):
+    raw=a.get("href","")
+    u=clean_url(raw)
+    if not u or not retailer_domain_match(u,domain): continue
+    title=a.get_text(" ",strip=True)
+    parent=a.parent
+    context=parent.get_text(" ",strip=True) if parent else ""
+    if len(context)<40 and parent and parent.parent: context=parent.parent.get_text(" ",strip=True)
+    combined=(title+" "+context).strip()
+    if not is_pokemon_tcg_title(combined): continue
+    if not title or not is_pokemon_tcg_title(title):
+     match=re.search(r"(?:Pok[eé]mon|Pokemon)[^.]{5,150}",combined,re.I)
+     title=match.group(0).strip() if match else combined[:250]
+    search_found.setdefault(u,title[:250])
+  except requests.RequestException as e:
+   log.warning("Google %s search unavailable for %s: %s",mode,retailer,e)
+   if google_blocked: break
  if len(search_found)<10:
   try:
+   q=f'site:{domain} Pokemon trading cards OR Pokemon TCG OR Pokemon booster OR Elite Trainer Box'
    r=requests.get("https://www.bing.com/search",params={"q":q,"format":"rss"},headers=HEADERS,timeout=20)
    r.raise_for_status()
    root=ET.fromstring(r.content)
    for item in root.findall(".//item"):
-    u=item.findtext("link","")
+    u=clean_url(item.findtext("link",""))
     title=item.findtext("title","")
-    if u and retailer_domain_match(clean_url(u) or "",domain) and title and is_pokemon_tcg_title(title):
-     search_found[u]=title[:250]
+    if u and retailer_domain_match(u,domain) and title and is_pokemon_tcg_title(title):
+     search_found.setdefault(u,title[:250])
   except (requests.RequestException,ET.ParseError) as e:
    log.warning("Bing RSS search unavailable for %s: %s",retailer,e)
  for u,title in search_found.items():
