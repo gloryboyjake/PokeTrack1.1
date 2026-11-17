@@ -73,19 +73,35 @@ def clean_url(u):
  if p.hostname and ("google." in p.hostname or "bing.com" in p.hostname):return None
  return urlunparse((p.scheme,p.netloc,p.path,"","",""))
 def search_products(retailer):
- domain=RETAILERS[retailer][0]; q=f'site:{domain} Pokémon trading cards OR Pokémon TCG'
- r=requests.get("https://www.google.com/search",params={"q":q,"num":20},headers=HEADERS,timeout=20); r.raise_for_status()
- soup=BeautifulSoup(r.text,"html.parser"); found={}
- for a in soup.select("a[href]"):
-  u=clean_url(a.get("href")); title=a.get_text(" ",strip=True)
-  if not u or not (urlparse(u).hostname or "").endswith(domain) or not title: continue
-  if not re.search(r"pokemon|pokémon|trading card|tcg",title,re.I): continue
-  found[u]=title[:250]
+ domain=RETAILERS[retailer][0]
+ q=f'site:{domain} Pokémon trading cards OR Pokémon TCG'
+ found={}
+ # Google can throttle shared cloud IPs; use Bing RSS as a fallback.
+ try:
+  r=requests.get("https://www.google.com/search",params={"q":q,"num":20},headers=HEADERS,timeout=20)
+  if r.status_code == 429:
+   raise requests.HTTPError("Google rate limited this server (HTTP 429)")
+  r.raise_for_status()
+  soup=BeautifulSoup(r.text,"html.parser")
+  for a in soup.select("a[href]"):
+   u=clean_url(a.get("href")); title=a.get_text(" ",strip=True)
+   if u and (urlparse(u).hostname or "").endswith(domain) and title and re.search(r"pokemon|pokémon|trading card|tcg",title,re.I):
+    found[u]=title[:250]
+ except requests.RequestException as google_error:
+  log.warning("Google unavailable for %s: %s; trying Bing RSS",retailer,google_error)
+  r=requests.get("https://www.bing.com/search",params={"q":q,"format":"rss"},headers=HEADERS,timeout=20)
+  r.raise_for_status()
+  soup=BeautifulSoup(r.text,"xml")
+  for item in soup.select("item"):
+   u=clean_url(item.link.get_text(strip=True) if item.link else "")
+   title=item.title.get_text(" ",strip=True) if item.title else ""
+   if u and (urlparse(u).hostname or "").endswith(domain) and title:
+    found[u]=title[:250]
  products=[]; c=conn()
- for u,title in list(found.items())[:15]:
+ for u,title in list(found.items())[:10]:
   price=None; stock="unknown"; source="retailer search result"
   try:
-   page=requests.get(u,headers=HEADERS,timeout=12); 
+   page=requests.get(u,headers=HEADERS,timeout=12)
    if page.ok:
     s=BeautifulSoup(page.text,"html.parser")
     og=s.find("meta",property="og:title")
@@ -124,7 +140,7 @@ def run_scan(kind):
   msg="; ".join(notes); c=conn();c.execute("UPDATE poketrack_scan_runs SET finished_at=?,status='completed',found=?,message=? WHERE id=?",(now(),total,msg,rid));c.commit();c.close()
   return {"status":"completed","found":total,"message":msg}
  except Exception as e:
-  log.exception("scan failed");c=conn();c.execute("UPDATE scan_runs SET finished_at=?,status='error',found=?,message=? WHERE id=?",(now(),total,str(e)[:500],rid));c.commit();c.close()
+  log.exception("scan failed");c=conn();c.execute("UPDATE poketrack_scan_runs SET finished_at=?,status='error',found=?,message=? WHERE id=?",(now(),total,str(e)[:500],rid));c.commit();c.close()
   return {"status":"error","found":total,"message":str(e)},500
  finally:
   SCAN_LOCK.release()
