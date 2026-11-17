@@ -380,16 +380,39 @@ def search_products(retailer):
    found.setdefault(seed_url,"Pokemon TCG Elite Trainer Box")
  if catalog:
   try:
-   r=browser_get(catalog,timeout=25)
-   r.raise_for_status()
-   soup=BeautifulSoup(r.text,"html.parser")
-   for a in soup.select("a[href]"):
-    title=a.get_text(" ",strip=True)
-    if not title:
-     image_node=a.find("img")
-     title=(image_node.get("alt") if image_node else None) or a.get("aria-label") or a.get("title") or ""
-    if not title and a.parent: title=a.parent.get_text(" ",strip=True)
-    add_candidate(requests.compat.urljoin(catalog,a.get("href","")),title)
+   # Target category listings are paginated. Walk the visible category pages and
+   # collect every retailer-owned product link exposed by the page, not just a
+   # small hand-picked sample. Stop at the retailer's last page or a safe ceiling.
+   page_urls=[catalog]
+   seen_pages=set()
+   while page_urls and len(seen_pages)<(30 if retailer=="Target" else 1):
+    page_url=page_urls.pop(0)
+    if page_url in seen_pages: continue
+    seen_pages.add(page_url)
+    r=browser_get(page_url,timeout=30)
+    r.raise_for_status()
+    soup=BeautifulSoup(r.text,"html.parser")
+    for a in soup.select("a[href]"):
+     title=a.get_text(" ",strip=True)
+     if not title:
+      image_node=a.find("img")
+      title=(image_node.get("alt") if image_node else None) or a.get("aria-label") or a.get("title") or ""
+     if not title and a.parent: title=a.parent.get_text(" ",strip=True)
+     add_candidate(requests.compat.urljoin(page_url,a.get("href","")),title)
+    if retailer=="Target":
+     for selector in ('a[rel="next"]','a[aria-label*="Next" i]','a[data-test*="next" i]'):
+      nxt=soup.select_one(selector)
+      if nxt and nxt.get("href"):
+       nu=requests.compat.urljoin(page_url,nxt["href"])
+       if nu not in seen_pages: page_urls.append(nu)
+       break
+     if not page_urls and len(seen_pages)<30:
+      from urllib.parse import urlsplit,urlunsplit,parse_qsl,urlencode
+      parts=urlsplit(page_url); params=dict(parse_qsl(parts.query))
+      current=int(params.get("Nao","0") or 0)
+      params["Nao"]=str(current+24)
+      next_url=urlunsplit((parts.scheme,parts.netloc,parts.path,urlencode(params),parts.fragment))
+      if next_url not in seen_pages: page_urls.append(next_url)
    def walk_catalog_json(obj):
     if isinstance(obj,dict):
      name=obj.get("name") or obj.get("title") or obj.get("productName")
@@ -422,7 +445,7 @@ def search_products(retailer):
  if not sitemap_queue: sitemap_queue=[f"https://www.{domain}/sitemap.xml"]
  sitemap_seen=set()
  sitemap_product_count=0
- while sitemap_queue and len(sitemap_seen)<8 and sitemap_product_count<40:
+ while sitemap_queue and len(sitemap_seen)<40 and sitemap_product_count<500:
   sitemap_url=sitemap_queue.pop(0)
   if sitemap_url in sitemap_seen: continue
   sitemap_seen.add(sitemap_url)
@@ -440,7 +463,7 @@ def search_products(retailer):
     if not retailer_domain_match(product_url,domain): continue
     add_candidate(product_url,"Pokemon Trading Card Product")
     sitemap_product_count+=1
-    if sitemap_product_count>=40: break
+    if sitemap_product_count>=500: break
   except (requests.RequestException,ET.ParseError) as e:
    log.warning("Retailer sitemap unavailable for %s (%s): %s",retailer,sitemap_url,e)
  if sitemap_product_count:
@@ -470,23 +493,22 @@ def search_products(retailer):
   found.setdefault(u,title)
  products=[]; c=conn()
  priority=("30th","delta-reign","ascended-heroes","chaos-rising","pitch-black","prismatic","mega-evolution","151","charizard","booster-bundle","elite-trainer")
- candidates=sorted(found.items(),key=lambda item:(0 if any(term in (item[0]+" "+item[1]).lower() for term in priority) else 1))[:15]
+ candidate_limit=500 if retailer=="Target" else 150
+ candidates=sorted(found.items(),key=lambda item:(0 if any(term in (item[0]+" "+item[1]).lower() for term in priority) else 1))[:candidate_limit]
  def fetch_candidate(item):
   u,title=item
   try:
    page=browser_get(u,timeout=18)
    if (not page.ok) or re.search(r"robot or human|captcha|verify you are human|access denied|unusual traffic",page.text[:30000],re.I):
-    log.info("Using Jina Reader fallback for %s (HTTP %s)",u,page.status_code)
-    reader_page=jina_read_url(u,timeout=8)
-    if reader_page: page=reader_page
+    log.info("Retailer page blocked for %s; availability remains unknown",u)
+    return item,None
    return item,page
   except Exception as e:
    log.debug("Retailer product fetch failed for %s: %s",u,e)
-   reader_page=jina_read_url(u,timeout=18)
-   return (item,reader_page) if reader_page else (item,None)
+   return item,None
  with ThreadPoolExecutor(max_workers=6) as pool:
   fetched=list(pool.map(fetch_candidate,candidates))
- log.info("%s: checking %s priority retailer product pages from %s candidates",retailer,len(candidates),len(found))
+ log.info("%s: checking %s retailer product pages from %s discovered candidates",retailer,len(candidates),len(found))
  for (candidate_index,((u,title),page)) in enumerate(fetched,1):
   try:
    if page is None:
