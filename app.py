@@ -605,77 +605,109 @@ def inventory_status_from_product_page(page_text):
   return "in_stock",qty,(str(qty) if qty is not None else "count unavailable")
  return "unknown",None,"count unavailable"
 def scan_store_inventory():
- # Google-only branch lookup with Jina Reader fallback when Google blocks server requests.
- c=conn(); stores=[dict(x) for x in c.execute("SELECT * FROM stores ORDER BY retailer,distance")]
- checked=0; confirmed=0; unknown=0; errors=0
- for store in stores:
-  retailer=store["retailer"]; domain=RETAILERS.get(retailer,(None,))[0]
-  if not domain: continue
-  branch_name=(store.get("name") or "").strip(); address=(store.get("address") or "").strip()
-  city=(store.get("city") or "").strip(); state=(store.get("state") or "").strip()
-  query=f'site:{domain} Pokémon TCG trading cards "{city}" "{state}"'
-  if address: query+=f' "{address}"'
-  google_url="https://www.google.com/search?"+requests.compat.urlencode({"num":20,"q":query})
-  search_text=""
+ # No Google SERP scraping. Use Target's own public RedSky store/product fulfillment
+ # endpoints where available; never convert a general online listing into store stock.
+ c=conn()
+ stores=[dict(x) for x in c.execute("SELECT * FROM stores ORDER BY retailer,distance")]
+ products=[dict(x) for x in c.execute("SELECT * FROM products WHERE seller_verified=1 ORDER BY popularity_score DESC,last_seen DESC LIMIT 120")]
+ checked=0; confirmed=0; unknown=0; errors=0; unsupported=0
+ target_key=os.getenv("TARGET_REDSKY_KEY","ff457966e64d5e877fdbad070f276d18ecec4a01")
+ session=requests.Session()
+ session.headers.update({**HEADERS,"Origin":"https://www.target.com","Referer":"https://www.target.com/"})
+ def target_store_id(store):
+  # Resolve by ZIP using Target's own nearby-store endpoint, then match the saved branch.
+  url=f"https://redsky.target.com/v3/stores/nearby/{store.get('postcode','')}"
   try:
-   response=search_get("https://www.google.com/search",params={"num":20,"q":query},headers=HEADERS,timeout=10)
-   blocked=(response.status_code==429 or re.search(r"unusual traffic|not a robot|captcha|consent\\.google\\.com",response.text[:30000],re.I))
-   if not blocked: response.raise_for_status(); search_text=response.text
-   else: log.warning("Google blocked branch lookup for %s %s; trying Jina Reader",retailer,branch_name)
-  except requests.RequestException as e:
-   log.warning("Google lookup failed for %s %s: %s; trying Jina Reader",retailer,branch_name,e)
-  if not search_text:
-   proxy=jina_read_url(google_url,timeout=18)
-   if proxy and proxy.ok and len(proxy.text)>100: search_text=proxy.text
-  if not search_text:
+   r=session.get(url,params={"key":target_key,"limit":50,"within":100,"unit":"mile"},timeout=15)
+   r.raise_for_status(); data=r.json()
+   candidates=[]
+   def walk(obj):
+    if isinstance(obj,dict):
+     loc=obj.get("location_id") or obj.get("store_id") or obj.get("storeId")
+     addr=obj.get("address") or obj.get("address_line1") or obj.get("addressLine1") or ""
+     city=obj.get("city") or ""
+     if loc: candidates.append((str(loc),str(addr),str(city),json.dumps(obj).lower()))
+     for v in obj.values():
+      if isinstance(v,(dict,list)): walk(v)
+    elif isinstance(obj,list):
+     for v in obj: walk(v)
+   walk(data)
+   city=(store.get("city") or "").lower()
+   street=(store.get("address") or "").split(",")[0].lower()
+   for sid,addr,ct,raw in candidates:
+    if city and city in (ct.lower()+" "+raw) and (not street or street.split()[0] in (addr.lower()+" "+raw)):
+     return sid
+   for sid,addr,ct,raw in candidates:
+    if city and city in (ct.lower()+" "+raw): return sid
+  except Exception as e:
+   log.warning("Target store resolution failed for %s: %s",store.get("name"),str(e)[:180])
+  return None
+ def target_fulfillment(tcin,store):
+  params={"key":target_key,"tcin":tcin,"store_id":store_id,"store_positions_store_id":store_id,
+          "has_store_positions_store_id":"true","zip":store.get("postcode",""),
+          "state":store.get("state",""),"latitude":store.get("lat"),"longitude":store.get("lon"),
+          "pricing_store_id":store_id,"has_pricing_store_id":"true","is_bot":"false"}
+  r=session.get("https://redsky.target.com/redsky_aggregations/v1/web/pdp_fulfillment_v1",params=params,timeout=18)
+  r.raise_for_status()
+  return r.json()
+ for store in stores:
+  retailer=store["retailer"]
+  if retailer!="Target":
+   unsupported+=1
+   detail="Branch-level stock endpoint not available in this Google-free scan. No online-only listing is counted as local stock."
+   c.execute("INSERT INTO store_inventory_checks(store_id,status,checked_at,detail) VALUES(?,?,?,?) ON CONFLICT(store_id) DO UPDATE SET status=excluded.status,checked_at=excluded.checked_at,detail=excluded.detail",(store["id"],"unsupported",now(),detail))
+   c.commit(); continue
+  store_id=target_store_id(store)
+  if not store_id:
    errors+=1
-   detail="Google and Jina Reader returned no usable results; stock was not inferred."
-   c.execute("INSERT INTO store_inventory_checks(store_id,status,checked_at,detail) VALUES(?,?,?,?) ON CONFLICT(store_id) DO UPDATE SET status=excluded.status,checked_at=excluded.checked_at,detail=excluded.detail",(store["id"],"error",now(),detail)); c.commit()
-   continue
-  soup=BeautifulSoup(search_text,"html.parser"); blocks=soup.select("div.MjjYud") or soup.select("div.g")
-  branch_results=[]
-  for block in blocks:
-   snippet=block.get_text(" ",strip=True); low=snippet.lower()
-   branch_match=bool((address and address.lower() in low) or (city and city.lower() in low and (state.lower() in low if state else True)) or (branch_name and branch_name.lower() not in (retailer.lower(),"") and branch_name.lower() in low))
-   if not branch_match: continue
-   for a in block.select("a[href]"):
-    url=clean_url(a.get("href",""))
-    if not url or not retailer_domain_match(url,domain) or not retailer_product_url_is_valid(retailer,url): continue
-    title=a.get_text(" ",strip=True)
-    if len(title)<8:
-     h=block.select_one("h3"); title=h.get_text(" ",strip=True) if h else ""
-    if not is_pokemon_tcg_title(title+" "+snippet): continue
-    status="out_of_stock" if re.search(r"\\b(out of stock|sold out|currently unavailable|not available)\\b",low) else ("in_stock" if re.search(r"\\b(in stock|available for pickup|available now|add to cart)\\b",low) else "unknown")
-    branch_results.append((url,title[:250] or "Pokémon TCG product",status,snippet[:1000]))
-  if not branch_results and "URL Source:" in search_text:
-   for match in re.finditer(r"(?m)^\\[([^\\]]{5,250})\\]\\((https?://[^)]+)\\)",search_text):
-    title=match.group(1).strip(); url=clean_url(match.group(2))
-    if not url or not retailer_domain_match(url,domain) or not retailer_product_url_is_valid(retailer,url): continue
-    snippet=re.sub(r"\\s+"," ",search_text[max(0,match.start()-350):min(len(search_text),match.end()+700)])
-    low=snippet.lower()
-    if not is_pokemon_tcg_title(title+" "+snippet): continue
-    branch_match=bool((address and address.lower() in low) or (city and city.lower() in low and (state.lower() in low if state else True)) or (branch_name and branch_name.lower() in low))
-    if not branch_match: continue
-    status="out_of_stock" if re.search(r"\\b(out of stock|sold out|currently unavailable|not available)\\b",low) else ("in_stock" if re.search(r"\\b(in stock|available for pickup|available now|add to cart)\\b",low) else "unknown")
-    branch_results.append((url,title[:250],status,snippet[:1000]))
-  unique={}
-  for row in branch_results: unique.setdefault(row[0],row)
-  # Preserve the last snapshot if the search succeeded but returned no branch-specific products.
-  if unique: c.execute("DELETE FROM store_inventory WHERE store_id=?",(store["id"],))
-  for url,title,status,snippet in unique.values():
+   detail="Target's store directory endpoint did not return a confidently matched branch; stock not inferred."
+   c.execute("INSERT INTO store_inventory_checks(store_id,status,checked_at,detail) VALUES(?,?,?,?) ON CONFLICT(store_id) DO UPDATE SET status=excluded.status,checked_at=excluded.checked_at,detail=excluded.detail",(store["id"],"error",now(),detail))
+   c.commit(); continue
+  branch_rows=[]; failures=0
+  for product in products:
+   match=re.search(r"/A-(\d+)",product.get("url",""))
+   if not match: continue
+   tcin=match.group(1)
+   try:
+    payload=target_fulfillment(tcin,store)
+    node=payload.get("data",{}).get("product",{}).get("fulfillment",{})
+    opts=node.get("store_options",[]) or []
+    status="unknown"; quantity=None; evidence="Target RedSky fulfillment response"
+    for opt in opts:
+     st=opt.get("store",{})
+     if str(st.get("location_id") or st.get("store_id") or "") not in ("",store_id): continue
+     inv=opt.get("in_store_only",{}).get("availability_status","")
+     pickup=opt.get("order_pickup",{}).get("availability_status","")
+     raw=(str(inv)+" "+str(pickup)).upper()
+     if "IN_STOCK" in raw or "LIMITED_STOCK" in raw:
+      status="in_stock"
+     elif "OUT_OF_STOCK" in raw or "NOT_SOLD" in raw or "UNAVAILABLE" in raw:
+      status="out_of_stock"
+     q=opt.get("in_store_only",{}).get("available_to_promise_quantity")
+     if q is None: q=opt.get("order_pickup",{}).get("available_to_promise_quantity")
+     if isinstance(q,(int,float)): quantity=int(q)
+     evidence=f"Target RedSky in-store={inv or 'unknown'}, pickup={pickup or 'unknown'}"
+     break
+    branch_rows.append((product["url"],product["title"],status,quantity,evidence))
+   except Exception as e:
+    failures+=1
+    log.warning("Target fulfillment failed for %s at %s: %s",product.get("title"),store.get("name"),str(e)[:180])
+  if branch_rows:
+   c.execute("DELETE FROM store_inventory WHERE store_id=?",(store["id"],))
+  for url,title,status,quantity,evidence in branch_rows:
    checked_at=now()
+   label=(f"Target-reported units: {quantity}" if quantity is not None else "Target does not expose a unit count")
    c.execute("""INSERT INTO store_inventory(store_id,product_url,product_title,status,quantity,quantity_label,source_url,detail,checked_at)
     VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(store_id,product_url) DO UPDATE SET product_title=excluded.product_title,status=excluded.status,quantity=excluded.quantity,quantity_label=excluded.quantity_label,source_url=excluded.source_url,detail=excluded.detail,checked_at=excluded.checked_at""",
-    (store["id"],url,title,status,None,"Google result — quantity not shown",url,"Google result snippet: "+snippet,checked_at))
+    (store["id"],url,title,status,quantity,label,url,evidence,checked_at))
    if status=="in_stock": confirmed+=1
    elif status=="unknown": unknown+=1
-  in_stock_here=sum(1 for x in unique.values() if x[2]=="in_stock")
-  state_value="checked" if unique else "no_match"
-  detail=f"Google-only branch lookup: {in_stock_here} product listing(s) explicitly said in stock; {len(unique)-in_stock_here} other result(s). Google snippets can be stale, not a live shelf count."
+  state_value="checked" if branch_rows and failures==0 else ("partial" if branch_rows else "error")
+  detail=f"Target RedSky direct store lookup for Target store ID {store_id}: {sum(1 for x in branch_rows if x[2]=='in_stock')} product(s) in stock; {len(branch_rows)} product(s) checked; {failures} request(s) failed."
   c.execute("INSERT INTO store_inventory_checks(store_id,status,checked_at,detail) VALUES(?,?,?,?) ON CONFLICT(store_id) DO UPDATE SET status=excluded.status,checked_at=excluded.checked_at,detail=excluded.detail",(store["id"],state_value,now(),detail))
-  c.commit(); checked+=1; time.sleep(0.25)
+  c.commit(); checked+=1
  c.close()
- return {"confirmed_products":confirmed,"message":f"Google-only branch lookup checked {checked} stores; {confirmed} product/store results explicitly said in stock; {unknown} had unknown availability; {errors} searches failed. Counts are product listings, not unit quantities."}
+ return {"confirmed_products":confirmed,"message":f"Google-free retailer API scan: {checked} Target branches checked; {confirmed} product/store listings in stock; {unknown} unknown; {errors} Target branch lookups failed; {unsupported} non-Target branches marked unsupported (not falsely counted)."}
 
 def run_scan(kind):
  global JINA_CALLS
