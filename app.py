@@ -11,7 +11,7 @@ log=logging.getLogger("poketrack")
 SCAN_LOCK=threading.Lock()
 DB_PATH=os.getenv("DB_PATH","/data/poketrack.db")
 ZIP=os.getenv("START_ZIP","22601")
-RADIUS=int(os.getenv("RADIUS_MILES","200"))
+RADIUS=int(os.getenv("RADIUS_MILES","80"))
 UA=os.getenv("USER_AGENT","Mozilla/5.0 (compatible; PokeTrackRadar/1.0)")
 HEADERS={"User-Agent":UA,"Accept-Language":"en-US,en;q=0.9"}
 RETAILERS={
@@ -57,50 +57,29 @@ def zip_origin(z):
  if not matches: raise RuntimeError('ZIP '+z+' could not be geocoded by ZIP lookup or Census fallback')
  x=matches[0]['coordinates']; return float(x['y']),float(x['x'])
 def discover_stores():
- lat,lon=zip_origin(ZIP)
- # Search by retailer identity tags, not only shop=*; many chains are mapped
- # with brand/operator/name tags and some features are ways or relations.
- pattern='(?i)target|walmart|best ?buy|costco|sam.?s club|walgreens|dollar general|barnes ?(&|and) ?noble|hobby lobby|books.?a.?million|gabe.?s'
- around=f'(around:{RADIUS*1609},{lat},{lon})'
- query='[out:json][timeout:60];('
- for tag in ('name','brand','operator'):
-  query+=f'nwr{around}["{tag}"~"{pattern}"];'
- query+=');out center tags;'
- endpoints=['https://overpass-api.de/api/interpreter','https://overpass.kumi.systems/api/interpreter','https://overpass.private.coffee/api/interpreter']
- data=None; errors=[]
- for endpoint in endpoints:
+ # Import the researched branch list; no map service or Overpass request is used.
+ import pathlib
+ directory_path=pathlib.Path(__file__).with_name('store_directory.json')
+ with directory_path.open(encoding='utf-8') as f: branches=json.load(f)
+ origin_lat,origin_lon=zip_origin(ZIP)
+ cache={}; saved=0; c=conn()
+ for retailer,name,street,city,state,postcode,source_url in branches:
   try:
-   response=requests.post(endpoint,data=query,headers=HEADERS,timeout=75)
-   response.raise_for_status(); data=response.json(); break
-  except Exception as e:
-   errors.append(f'{endpoint}: {str(e)[:100]}')
- if data is None: raise RuntimeError('All OpenStreetMap search endpoints failed: '+'; '.join(errors))
- elements=data.get('elements',[]); saved=0; c=conn()
- aliases={
-  'target':'Target','walmart':'Walmart','best buy':'Best Buy','bestbuy':'Best Buy',
-  'costco':'Costco',"sam's club": "Sam's Club",'sams club':"Sam's Club",
-  'walgreens':'Walgreens','dollar general':'Dollar General',
-  'barnes & noble':'Barnes & Noble','barnes and noble':'Barnes & Noble',
-  'hobby lobby':'Hobby Lobby','books-a-million':'Books-A-Million',
-  'books a million':'Books-A-Million',"gabe's": "Gabe's",'gabes':'Gabe\'s'
- }
- for el in elements:
-  tags=el.get('tags',{})
-  raw=' '.join([tags.get('name',''),tags.get('brand',''),tags.get('operator','')]).strip()
-  key=raw.lower()
-  retailer=next((v for k,v in aliases.items() if k in key),None)
-  if not retailer: continue
-  p=el.get('center',el); y=p.get('lat'); x=p.get('lon')
-  if y is None or x is None: continue
-  dist=haversine(lat,lon,float(y),float(x))
-  if dist>RADIUS: continue
-  street=' '.join(filter(None,[tags.get('addr:housenumber'),tags.get('addr:street')]))
-  addr=', '.join(filter(None,[street,tags.get('addr:city'),tags.get('addr:state'),tags.get('addr:postcode')]))
-  c.execute('''INSERT INTO stores(retailer,name,address,city,state,postcode,lat,lon,distance,source,source_url,checked_at)
-   VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(retailer,name,lat,lon) DO UPDATE SET address=excluded.address,
-   distance=excluded.distance,checked_at=excluded.checked_at''',
-   (retailer,tags.get('name') or tags.get('brand') or raw or retailer,addr,tags.get('addr:city'),tags.get('addr:state'),tags.get('addr:postcode'),y,x,round(dist,1),'OpenStreetMap','https://www.openstreetmap.org/'+el['type']+'/'+str(el['id']),now()))
-  saved+=1
+   if postcode not in cache:
+    zr=requests.get('https://api.zippopotam.us/us/'+postcode,headers=HEADERS,timeout=15)
+    zr.raise_for_status(); places=zr.json().get('places',[])
+    if not places: continue
+    cache[postcode]=(float(places[0]['latitude']),float(places[0]['longitude']))
+   lat,lon=cache[postcode]; dist=haversine(origin_lat,origin_lon,lat,lon)
+   if dist>RADIUS: continue
+   address=f'{street}, {city}, {state} {postcode}'
+   c.execute('''INSERT INTO stores(retailer,name,address,city,state,postcode,lat,lon,distance,source,source_url,checked_at)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(retailer,name,lat,lon) DO UPDATE SET address=excluded.address,
+    city=excluded.city,state=excluded.state,postcode=excluded.postcode,distance=excluded.distance,
+    source=excluded.source,source_url=excluded.source_url,checked_at=excluded.checked_at''',
+    (retailer,name,address,city,state,postcode,lat,lon,round(dist,1),'Retailer web research',source_url,now()))
+   saved+=1
+  except Exception as e: log.warning('Skipping directory entry %s %s: %s',retailer,name,e)
  c.commit(); c.close(); return saved
 def clean_url(u):
  u=unquote(u or "")
@@ -183,16 +162,16 @@ def run_scan(kind):
   SCAN_LOCK.release()
 HTML="""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PokeTrack Radar</title><style>
 :root{color-scheme:dark;--bg:#090e19;--panel:#121b2b;--line:#26364d;--muted:#9aabc2;--accent:#62d6c5;--gold:#f5c76b}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:#edf4ff;font:15px system-ui}header{padding:24px max(18px,calc((100% - 1240px)/2));background:#101a2a;border-bottom:1px solid var(--line)}h1{margin:0;font-size:26px}header p,.muted{color:var(--muted)}main{max-width:1240px;margin:auto;padding:20px}.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}.panel,.stat{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:14px}.stat b{font-size:25px;display:block}.toolbar{display:flex;gap:10px;flex-wrap:wrap;margin:12px 0}.toolbar input,.toolbar select,button{background:#1b2940;color:#fff;border:1px solid #3b506c;border-radius:9px;padding:11px}button{cursor:pointer;background:#176e68;border:0;font-weight:700}.tabs{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}.tabs button{background:#24344d}.tabs button.active{background:#176e68}.item{padding:12px 0;border-top:1px solid var(--line);display:flex;justify-content:space-between;gap:12px}.item a{color:var(--accent)}.pill{border:1px solid #465b74;border-radius:20px;padding:3px 8px;font-size:12px;white-space:nowrap}.ok{color:#8ee0a9}.warn{color:var(--gold)}@media(max-width:760px){.grid{grid-template-columns:repeat(2,1fr)}.item{display:block}.item .pill{display:inline-block;margin-top:6px}}
-</style></head><body><header><h1>⚡ PokeTrack Radar</h1><p>Physical store discovery · Pokémon product listings · Winchester, VA 22601 · 200-mile radius</p></header><main>
+</style></head><body><header><h1>⚡ PokeTrack Radar</h1><p>Physical store discovery · Pokémon product listings · Winchester, VA 22601 · 80-mile radius</p></header><main>
 <div class="grid"><div class="stat"><b id="stores">—</b><span class="muted">Physical stores found</span></div><div class="stat"><b id="products">—</b><span class="muted">Product listings</span></div><div class="stat"><b id="stock">—</b><span class="muted">Pages explicitly in stock</span></div><div class="stat"><b id="last">—</b><span class="muted">Last completed scan</span></div></div>
-<section class="panel"><h2>Radar controls</h2><p class="muted">Store locations come from OpenStreetMap. Product pages are online listings; stock is only marked when a retailer page exposes explicit availability. No shelf-level inventory or quantities are assumed.</p><div class="toolbar"><button onclick="scan('all')">Run full scan</button><button onclick="scan('stores')">Refresh store directory</button><button onclick="scan('products')">Scan product listings</button><span id="msg" class="muted">Ready</span></div></section>
+<section class="panel"><h2>Radar controls</h2><p class="muted">Store locations come from a researched retailer branch directory. Product pages are online listings; stock is only marked when a retailer page exposes explicit availability. No shelf-level inventory or quantities are assumed.</p><div class="toolbar"><button onclick="scan('all')">Run full scan</button><button onclick="scan('stores')">Refresh store directory</button><button onclick="scan('products')">Scan product listings</button><span id="msg" class="muted">Ready</span></div></section>
 <div class="tabs"><button class="active" onclick="tab('stores',this)">Physical stores</button><button onclick="tab('products',this)">Product listings</button><button onclick="tab('history',this)">Scan history</button></div>
 <section class="panel"><div class="toolbar"><input id="q" placeholder="Filter by store, city, product…" oninput="draw()"><select id="retailer" onchange="draw()"><option value="">All retailers</option></select><select id="availability" onchange="draw()"><option value="">All availability</option><option value="in_stock">Explicitly in stock</option><option value="out_of_stock">Explicitly sold out</option><option value="unknown">Unknown</option></select></div><div id="list" class="muted">Loading…</div></section>
 <p class="muted">Store directory data © OpenStreetMap contributors. Product links open retailer websites. Availability can change and must be confirmed with the retailer.</p></main><script>
 let mode='stores',stores=[],products=[],history=[];function tab(m,b){mode=m;document.querySelectorAll('.tabs button').forEach(x=>x.classList.remove('active'));b.classList.add('active');draw()}
 async function load(){try{let [a,b,c,d]=await Promise.all(['/api/stores','/api/products','/api/history','/api/summary'].map(x=>fetch(x).then(r=>r.json())));stores=a.stores||[];products=b.products||[];history=c.runs||[];document.getElementById('stores').textContent=stores.length;document.getElementById('products').textContent=products.length;document.getElementById('stock').textContent=products.filter(x=>x.availability==='in_stock').length;document.getElementById('last').textContent=d.last_scan?new Date(d.last_scan).toLocaleString():'—';let opts=[...new Set([...stores,...products].map(x=>x.retailer))].sort();document.getElementById('retailer').innerHTML='<option value="">All retailers</option>'+opts.map(x=>'<option>'+esc(x)+'</option>').join('');draw()}catch(e){document.getElementById('list').textContent='Could not load dashboard data: '+e}}
 function esc(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
-function draw(){let q=document.getElementById('q').value.toLowerCase(),r=document.getElementById('retailer').value,a=document.getElementById('availability').value;let rows=mode==='stores'?stores:mode==='products'?products:history;rows=rows.filter(x=>(!r||x.retailer===r)&&(!a||x.availability===a)&&JSON.stringify(x).toLowerCase().includes(q));document.getElementById('list').innerHTML=rows.length?rows.map(x=>mode==='stores'?'<div class="item"><div><b>'+esc(x.name)+'</b><div class="muted">'+esc(x.retailer)+' · '+esc(x.address||x.city||'Address not listed')+'</div><div class="muted">'+Number(x.distance).toFixed(1)+' miles from '+esc(x.zip||'22601')+' · <a href="'+esc(x.source_url)+'" target="_blank">Map/source</a></div></div><span class="pill">'+esc(x.source)+'</span></div>':mode==='products'?'<div class="item"><div><b><a href="'+esc(x.url)+'" target="_blank">'+esc(x.title)+'</a></b><div class="muted">'+esc(x.retailer)+' · '+esc(x.price||'Price not listed')+'</div></div><span class="pill">'+esc(x.availability)+'</span></div>':'<div class="item"><div><b>'+esc(x.kind)+' · '+esc(x.status)+'</b><div class="muted">'+esc(x.message)+'</div></div><span class="pill">'+esc(x.started_at)+'</span></div>').join(''):'<p class="muted">No matching records yet. Run a scan to populate this section.</p>'}
+function draw(){let q=document.getElementById('q').value.toLowerCase(),r=document.getElementById('retailer').value,a=document.getElementById('availability').value;let rows=mode==='stores'?stores:mode==='products'?products:history;rows=rows.filter(x=>(!r||x.retailer===r)&&(!a||x.availability===a)&&JSON.stringify(x).toLowerCase().includes(q));document.getElementById('list').innerHTML=rows.length?rows.map(x=>mode==='stores'?'<div class="item"><div><b>'+esc(x.name)+'</b><div class="muted">'+esc(x.retailer)+' · '+esc(x.address||x.city||'Address not listed')+'</div><div class="muted">'+Number(x.distance).toFixed(1)+' miles from '+esc(x.zip||'22601')+' · <a href="'+esc(x.source_url)+'" target="_blank">Verify listing</a></div></div><span class="pill">'+esc(x.source)+'</span></div>':mode==='products'?'<div class="item"><div><b><a href="'+esc(x.url)+'" target="_blank">'+esc(x.title)+'</a></b><div class="muted">'+esc(x.retailer)+' · '+esc(x.price||'Price not listed')+'</div></div><span class="pill">'+esc(x.availability)+'</span></div>':'<div class="item"><div><b>'+esc(x.kind)+' · '+esc(x.status)+'</b><div class="muted">'+esc(x.message)+'</div></div><span class="pill">'+esc(x.started_at)+'</span></div>').join(''):'<p class="muted">No matching records yet. Run a scan to populate this section.</p>'}
 async function scan(kind){let m=document.getElementById('msg');m.textContent='Starting scan…';try{let r=await fetch('/api/scan?kind='+kind,{method:'POST'}),d=await r.json();m.textContent=d.message||d.error||'Scan started';if(!r.ok)return;let tries=0;let timer=setInterval(async()=>{tries++;await load();let running=history.some(x=>x.status==='running');if(!running||tries>=180){clearInterval(timer);m.textContent=running?'Scan is still running; you can keep using the dashboard.':'Scan finished. '+(history[0]?.message||'Results refreshed.')}},4000)}catch(e){m.textContent='Scan failed: '+e}}
 load();setInterval(load,60000);
 </script></body></html>"""
