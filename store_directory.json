@@ -1,5 +1,599 @@
 [
   [
+    "Barnes & Noble",
+    "Barnes & Noble One Loudoun",
+    "20427 Exchange St",
+    "Ashburn",
+    "VA",
+    "20147",
+    "https://stores.barnesandnoble.com/?searchText=20147"
+  ],
+  [
+    "Barnes & Noble",
+    "Barnes & Noble Francis Scott Key Mall",
+    "5500 Buckeystown Pike",
+    "Frederick",
+    "MD",
+    "21703",
+    "https://stores.barnesandnoble.com/store/2257"
+  ],
+  [
+    "Barnes & Noble",
+    "Barnes & Noble Shops at Stonewall",
+    "8139 Stonewall Shops Square Suite 405-B",
+    "Gainesville",
+    "VA",
+    "20155",
+    "https://stores.barnesandnoble.com/?searchText=20155"
+  ],
+  [
+    "Barnes & Noble",
+    "Barnes & Noble Rio Lakefront",
+    "21 Grand Corner Ave",
+    "Gaithersburg",
+    "MD",
+    "20878",
+    "https://stores.barnesandnoble.com/?searchText=20878"
+  ],
+  [
+    "Barnes & Noble",
+    "Harrisonburg",
+    "289 Burgess Rd",
+    "Harrisonburg",
+    "VA",
+    "22801",
+    "https://stores.barnesandnoble.com"
+  ],
+  [
+    "Barnes & Noble",
+    "Barnes & Noble Dulles Landing",
+    "24670 Dulles Landing Dr Suite 130",
+    "Sterling",
+    "VA",
+    "20166",
+    "https://stores.barnesandnoble.com/?searchText=20166"
+  ],
+  [
+    "Barnes & Noble",
+    "Barnes & Noble Westminster",
+    "402 Englar Rd Suite C",
+    "Westminster",
+    "MD",
+    "21157",
+    "https://stores.barnesandnoble.com/?searchText=21157"
+  ],
+  [
+    "Best Buy",
+    "Best Buy Frederick #427",
+    "7300 Guilford Dr",
+    "Frederick",
+    "MD",
+    "21704",
+    "https://stores.bestbuy.com/md/frederick.html"
+  ],
+  [
+    "Best Buy",
+    "Best Buy Hagerstown #1445",
+    "18053 Garland Groh Blvd",
+    "Hagerstown",
+    "MD",
+    "21740",
+    "https://stores.bestbuy.com/md/hagerstown.html"
+  ],
+  [
+    "Best Buy",
+    "Best Buy Leesburg #1022",
+    "609 Potomac Station Dr",
+    "Leesburg",
+    "VA",
+    "20176",
+    "https://stores.bestbuy.com/va/leesburg.html"
+  ],
+  [
+    "Best Buy",
+    "Best Buy Sterling #146",
+    "45575 Dulles Eastern Plz Ste 188",
+    "Sterling",
+    "VA",
+    "20166",
+    "https://stores.bestbuy.com/va/sterling.html"
+  ],
+  [
+    "Best Buy",
+    "Winchester #1086",
+    "601 E Jubal Early Dr",
+    "Winchester",
+    "VA",
+    "22601",
+    "https://stores.bestbuy.com/va/winchester.html"
+  ],
+  [
+    "Books-A-Million",
+    "Harrisonburg",
+    "1925 E Market St",
+    "Harrisonburg",
+    "VA",
+    "22801",
+    "https://www.booksamillion.com"
+  ],
+  [
+    "Books-A-Million",
+    "Winchester",
+    "2198 S Pleasant Valley Rd",
+    "Winchester",
+    "VA",
+    "22601",
+    "https://www.booksamillion.com"
+  ],
+  [
+    "Costco",
+    "Chantilly #334",
+    "14390 Chantilly Crossing Ln",
+    "Chantilly",
+    "VA",
+    "20151",
+    "https://www.costco.com/warehouse-locations.html"
+  ],
+  [
+    "Costco",
+    "Frederick #330",
+    "10 Monocacy Blvd",
+    "Frederick",
+    "MD",
+    "21704",
+    "https://www.costco.com/warehouse-locations.html"
+  ],
+  [
+    "Costco",
+    "Leesburg #337",
+    "1300 Edwards Ferry Rd NE",
+    "Leesburg",
+    "VA",
+    "20176",
+    "https://www.costco.com/warehouse-locations.html"
+  ],
+  [
+    "Costco",
+    "Manassas #225",
+    "10701 Sudley Manor Dr",
+    "Manassas",
+    "VA",
+    "20109",
+    "https://www.costco.com/warehouse-locations.html"
+  ],
+  [
+    "Costco",
+    "Sterling #218",
+    "21398 Price Cascades Plz",
+    "Sterling",
+    "VA",
+    "20166",
+    "https://www.costco.com/warehouse-locations.html"
+  ],
+  [
+    "Costco",
+    "Winchester #239",
+    "251 Front Royal Pike",
+    "Winchester",
+    "VA",
+    "22602",
+    "https://www.costco.com/warehouse-locations-239.html"
+  ],
+  [
+    "Dollar General",
+    "Dollar General",
+    "20 S Church St",
+    "Berryville",
+    "VA",
+    "22611",
+    "https://www.dollargeneral.com/store-directory/va/berryville"
+  ],
+  [
+    "Dollar General",
+    "Dollar General #24195",
+    "126 Jeffs Way",
+    "Clear Brook",
+    "VA",
+    "22624",
+    "https://www.dollargeneral.com/store-directory/va/clear-brook"
+  ],
+  [
+    "Dollar General",
+    "Dollar General #463",
+    "470 S Commerce Ave",
+    "Front Royal",
+    "VA",
+    "22630",
+    "https://www.dollargeneral.com/store-directory/va/front-royal"
+  ],
+  [
+    "Dollar General",
+    "Dollar General",
+    "17213 Virginia Ave",
+    "Hagerstown",
+    "MD",
+    "21740",
+    "https://www.dollargeneral.com/store-directory/md/hagerstown"
+  ],
+  [
+    "Dollar General",
+    "Dollar General",
+    "18702 North Village",
+    "Hagerstown",
+    "MD",
+    "21742",
+    "https://www.dollargeneral.com/store-directory/md/hagerstown"
+  ],
+  [
+    "Dollar General",
+    "Dollar General",
+    "225 E Franklin St",
+    "Hagerstown",
+    "MD",
+    "21740",
+    "https://www.dollargeneral.com/store-directory/md/hagerstown"
+  ],
+  [
+    "Dollar General",
+    "Dollar General",
+    "19918 Jefferson Blvd",
+    "Hagerstown",
+    "MD",
+    "21740",
+    "https://www.dollargeneral.com/store-directory/md/hagerstown"
+  ],
+  [
+    "Dollar General",
+    "Dollar General",
+    "1423 Dual Hwy Ste 28",
+    "Hagerstown",
+    "MD",
+    "21740",
+    "https://www.dollargeneral.com/store-directory/md/hagerstown"
+  ],
+  [
+    "Dollar General",
+    "Dollar General",
+    "1579 Potomac Ave",
+    "Hagerstown",
+    "MD",
+    "21742",
+    "https://www.dollargeneral.com/store-directory/md/hagerstown"
+  ],
+  [
+    "Dollar General",
+    "Dollar General",
+    "761 E Wilson Blvd",
+    "Hagerstown",
+    "MD",
+    "21740",
+    "https://www.dollargeneral.com/store-directory/md/hagerstown"
+  ],
+  [
+    "Dollar General",
+    "Dollar General",
+    "1117 Maryland Ave",
+    "Hagerstown",
+    "MD",
+    "21740",
+    "https://www.dollargeneral.com/store-directory/md/hagerstown"
+  ],
+  [
+    "Dollar General",
+    "Dollar General",
+    "5611 Winchester Ave",
+    "Martinsburg",
+    "WV",
+    "25405",
+    "https://www.dollargeneral.com/store-directory/wv/martinsburg"
+  ],
+  [
+    "Dollar General",
+    "Dollar General #24090",
+    "3251 Eagle School Rd",
+    "Martinsburg",
+    "WV",
+    "25404",
+    "https://www.dollargeneral.com/store-directory/wv/martinsburg"
+  ],
+  [
+    "Dollar General",
+    "Dollar General #7780",
+    "2185 Winchester Ave",
+    "Martinsburg",
+    "WV",
+    "25405",
+    "https://www.dollargeneral.com/store-directory/wv/martinsburg"
+  ],
+  [
+    "Dollar General",
+    "Dollar General #9362",
+    "129 Eagle School Rd",
+    "Martinsburg",
+    "WV",
+    "25404",
+    "https://www.dollargeneral.com/store-directory/wv/martinsburg"
+  ],
+  [
+    "Dollar General",
+    "Dollar General #13007",
+    "7695 Main St",
+    "Middletown",
+    "VA",
+    "22645",
+    "https://www.dollargeneral.com/store-directory/va/middletown"
+  ],
+  [
+    "Dollar General",
+    "Dollar General #14892",
+    "321 Fairfax Pike",
+    "Stephens City",
+    "VA",
+    "22655",
+    "https://www.dollargeneral.com/store-directory/va/stephens-city"
+  ],
+  [
+    "Dollar General",
+    "Dollar General",
+    "185 E King St",
+    "Strasburg",
+    "VA",
+    "22657",
+    "https://www.dollargeneral.com/store-directory/va/strasburg"
+  ],
+  [
+    "Dollar General",
+    "Winchester",
+    "2824 Valley Ave",
+    "Winchester",
+    "VA",
+    "22601",
+    "https://www.dollargeneral.com/store-directory/va/winchester"
+  ],
+  [
+    "Dollar General",
+    "Dollar General #494",
+    "466A N Main St",
+    "Woodstock",
+    "VA",
+    "22664",
+    "https://www.dollargeneral.com/store-directory/va/woodstock"
+  ],
+  [
+    "Gabe's",
+    "Winchester",
+    "130 Delco Plaza",
+    "Winchester",
+    "VA",
+    "22602",
+    "https://www.gabesstores.com"
+  ],
+  [
+    "Hobby Lobby",
+    "Hagerstown - Valley Park Commons",
+    "1713 Massey Blvd",
+    "Hagerstown",
+    "MD",
+    "21740",
+    "https://www.hobbylobby.com/stores"
+  ],
+  [
+    "Hobby Lobby",
+    "Leesburg - Fort Evans Plaza II",
+    "240 Fort Evans Rd NE",
+    "Leesburg",
+    "VA",
+    "20176",
+    "https://www.hobbylobby.com/stores"
+  ],
+  [
+    "Hobby Lobby",
+    "Martinsburg",
+    "800 Foxcroft Ave",
+    "Martinsburg",
+    "WV",
+    "25401",
+    "https://www.hobbylobby.com/stores"
+  ],
+  [
+    "Hobby Lobby",
+    "Winchester #479",
+    "2047 S Pleasant Valley Rd",
+    "Winchester",
+    "VA",
+    "22601",
+    "https://www.hobbylobby.com/stores/search/479"
+  ],
+  [
+    "Sam's Club",
+    "Sam's Club Frederick #6652",
+    "5604 Buckeystown Pike",
+    "Frederick",
+    "MD",
+    "21704",
+    "https://www.samsclub.com/club/6652-frederick-md"
+  ],
+  [
+    "Sam's Club",
+    "Sam's Club Gaithersburg #6653",
+    "610 N Frederick Ave",
+    "Gaithersburg",
+    "MD",
+    "20877",
+    "https://www.samsclub.com/club/6653"
+  ],
+  [
+    "Sam's Club",
+    "Sam's Club Hagerstown #8193",
+    "1700 Wesel Blvd",
+    "Hagerstown",
+    "MD",
+    "21740",
+    "https://www.samsclub.com/club/8193-hagerstown-md"
+  ],
+  [
+    "Sam's Club",
+    "Sam's Club Sterling #4729",
+    "45425 Dulles Crossing Plz",
+    "Sterling",
+    "VA",
+    "20166",
+    "https://www.samsclub.com/club/4729"
+  ],
+  [
+    "Target",
+    "Target Chambersburg",
+    "913 Norland Ave",
+    "Chambersburg",
+    "PA",
+    "17201",
+    "https://www.target.com/store-locator/find-stores/17201"
+  ],
+  [
+    "Target",
+    "Chantilly",
+    "14391 Chantilly Crossing Ln",
+    "Chantilly",
+    "VA",
+    "20151",
+    "https://www.target.com/store-locator/find-stores/20151"
+  ],
+  [
+    "Target",
+    "Culpeper",
+    "15341 Montanus Dr",
+    "Culpeper",
+    "VA",
+    "22701",
+    "https://www.target.com/store-locator/find-stores/22701"
+  ],
+  [
+    "Target",
+    "Fair Lakes",
+    "13047 Fair Lakes Shopping Ctr",
+    "Fairfax",
+    "VA",
+    "22033",
+    "https://www.target.com/store-locator/find-stores/22033"
+  ],
+  [
+    "Target",
+    "Frederick",
+    "5437 Urbana Pike",
+    "Frederick",
+    "MD",
+    "21704",
+    "https://www.target.com/store-locator/find-stores/21704"
+  ],
+  [
+    "Target",
+    "Front Royal",
+    "10 Crooked Run Plaza",
+    "Front Royal",
+    "VA",
+    "22630",
+    "https://www.target.com/store-locator/find-stores/22630"
+  ],
+  [
+    "Target",
+    "Gainesville",
+    "13301 Gateway Center Dr",
+    "Gainesville",
+    "VA",
+    "20155",
+    "https://www.target.com/store-locator/find-stores/20155"
+  ],
+  [
+    "Target",
+    "Gaithersburg",
+    "25 Grand Corner Ave",
+    "Gaithersburg",
+    "MD",
+    "20878",
+    "https://www.target.com/store-locator/find-stores/20878"
+  ],
+  [
+    "Target",
+    "Germantown",
+    "20908 Frederick Rd",
+    "Germantown",
+    "MD",
+    "20876",
+    "https://www.target.com/store-locator/find-stores/20876"
+  ],
+  [
+    "Target",
+    "Hagerstown",
+    "17213 Cole Rd",
+    "Hagerstown",
+    "MD",
+    "21740",
+    "https://www.target.com/store-locator/find-stores/21740"
+  ],
+  [
+    "Target",
+    "Leesburg",
+    "1200 Edwards Ferry Rd",
+    "Leesburg",
+    "VA",
+    "20176",
+    "https://www.target.com/store-locator/find-stores/20176"
+  ],
+  [
+    "Target",
+    "Manassas West",
+    "9900 Sowder Village Sq",
+    "Manassas",
+    "VA",
+    "20109",
+    "https://www.target.com/store-locator/find-stores/20109"
+  ],
+  [
+    "Target",
+    "Martinsburg",
+    "436 Retail Commons Pkwy",
+    "Martinsburg",
+    "WV",
+    "25403",
+    "https://www.target.com/store-locator/find-stores/25403"
+  ],
+  [
+    "Target",
+    "Reston",
+    "12197 Sunset Hills Rd",
+    "Reston",
+    "VA",
+    "20190",
+    "https://www.target.com/store-locator/find-stores/20190"
+  ],
+  [
+    "Target",
+    "Dulles",
+    "45130 Columbia Pl",
+    "Sterling",
+    "VA",
+    "20166",
+    "https://www.target.com/store-locator/find-stores/20166"
+  ],
+  [
+    "Target",
+    "South Riding",
+    "24670 Arcola Landing Dr Bldg 8",
+    "Sterling",
+    "VA",
+    "20166",
+    "https://www.target.com/store-locator/find-stores/20166"
+  ],
+  [
+    "Target",
+    "Sterling",
+    "46201 Potomac Run Plz",
+    "Sterling",
+    "VA",
+    "20164",
+    "https://www.target.com/store-locator/find-stores/20164"
+  ],
+  [
     "Target",
     "Winchester",
     "2340 Legge Blvd",
@@ -18,175 +612,184 @@
     "https://www.target.com/store-locator/find-stores/22601"
   ],
   [
-    "Target",
-    "Front Royal",
-    "10 Crooked Run Plaza",
-    "Front Royal",
+    "Walgreens",
+    "Walgreens",
+    "20321 Susan Leslie Dr",
+    "Ashburn",
     "VA",
-    "22630",
-    "https://www.target.com/store-locator/find-stores/22630"
+    "20147",
+    "https://www.walgreens.com/storelocator/pharmacy/hagerstown-md"
   ],
   [
-    "Target",
-    "Martinsburg",
-    "436 Retail Commons Pkwy",
-    "Martinsburg",
+    "Walgreens",
+    "Walgreens",
+    "42820 Creek View Plz",
+    "Ashburn",
+    "VA",
+    "20147",
+    "https://www.walgreens.com/storelocator/pharmacy/hagerstown-md"
+  ],
+  [
+    "Walgreens",
+    "Walgreens",
+    "40 Flowing Springs Way",
+    "Charles Town",
     "WV",
-    "25403",
-    "https://www.target.com/store-locator/find-stores/25403"
+    "25414",
+    "https://www.walgreens.com/storelocator/pharmacy/martinsburg-wv"
   ],
   [
-    "Target",
-    "Leesburg",
-    "1200 Edwards Ferry Rd",
-    "Leesburg",
-    "VA",
-    "20176",
-    "https://www.target.com/store-locator/find-stores/20176"
-  ],
-  [
-    "Target",
-    "Hagerstown",
-    "17213 Cole Rd",
+    "Walgreens",
+    "Walgreens",
+    "1631 Dual Hwy",
     "Hagerstown",
     "MD",
     "21740",
-    "https://www.target.com/store-locator/find-stores/21740"
+    "https://www.walgreens.com/storelocator/pharmacy/hagerstown-md"
   ],
   [
-    "Target",
-    "South Riding",
-    "24670 Arcola Landing Dr Bldg 8",
-    "Sterling",
-    "VA",
-    "20166",
-    "https://www.target.com/store-locator/find-stores/20166"
-  ],
-  [
-    "Target",
-    "Gainesville",
-    "13301 Gateway Center Dr",
-    "Gainesville",
-    "VA",
-    "20155",
-    "https://www.target.com/store-locator/find-stores/20155"
-  ],
-  [
-    "Target",
-    "Dulles",
-    "45130 Columbia Pl",
-    "Sterling",
-    "VA",
-    "20166",
-    "https://www.target.com/store-locator/find-stores/20166"
-  ],
-  [
-    "Target",
-    "Sterling",
-    "46201 Potomac Run Plz",
-    "Sterling",
-    "VA",
-    "20164",
-    "https://www.target.com/store-locator/find-stores/20164"
-  ],
-  [
-    "Target",
-    "Chantilly",
-    "14391 Chantilly Crossing Ln",
-    "Chantilly",
-    "VA",
-    "20151",
-    "https://www.target.com/store-locator/find-stores/20151"
-  ],
-  [
-    "Target",
-    "Frederick",
-    "5437 Urbana Pike",
-    "Frederick",
+    "Walgreens",
+    "Walgreens",
+    "17703 Virginia Ave",
+    "Hagerstown",
     "MD",
-    "21704",
-    "https://www.target.com/store-locator/find-stores/21704"
+    "21740",
+    "https://www.walgreens.com/storelocator/pharmacy/hagerstown-md"
   ],
   [
-    "Target",
-    "Reston",
-    "12197 Sunset Hills Rd",
-    "Reston",
-    "VA",
-    "20190",
-    "https://www.target.com/store-locator/find-stores/20190"
-  ],
-  [
-    "Target",
-    "Manassas West",
-    "9900 Sowder Village Sq",
-    "Manassas",
-    "VA",
-    "20109",
-    "https://www.target.com/store-locator/find-stores/20109"
-  ],
-  [
-    "Target",
-    "Fair Lakes",
-    "13047 Fair Lakes Shopping Ctr",
-    "Fairfax",
-    "VA",
-    "22033",
-    "https://www.target.com/store-locator/find-stores/22033"
-  ],
-  [
-    "Target",
-    "Culpeper",
-    "15341 Montanus Dr",
-    "Culpeper",
-    "VA",
-    "22701",
-    "https://www.target.com/store-locator/find-stores/22701"
-  ],
-  [
-    "Target",
-    "Germantown",
-    "20908 Frederick Rd",
-    "Germantown",
+    "Walgreens",
+    "Walgreens",
+    "13415 Pennsylvania Ave",
+    "Hagerstown",
     "MD",
-    "20876",
-    "https://www.target.com/store-locator/find-stores/20876"
+    "21742",
+    "https://www.walgreens.com/storelocator/pharmacy/hagerstown-md"
   ],
   [
-    "Target",
-    "Gaithersburg",
-    "25 Grand Corner Ave",
-    "Gaithersburg",
+    "Walgreens",
+    "Walgreens",
+    "7916 Winchester Ave",
+    "Inwood",
+    "WV",
+    "25428",
+    "https://www.walgreens.com/storelocator/pharmacy/martinsburg-wv"
+  ],
+  [
+    "Walgreens",
+    "Walgreens",
+    "424 Sycolin Rd SE",
+    "Leesburg",
+    "VA",
+    "20175",
+    "https://www.walgreens.com/storelocator/pharmacy/hagerstown-md"
+  ],
+  [
+    "Walgreens",
+    "Walgreens",
+    "101 Forbes Dr",
+    "Martinsburg",
+    "WV",
+    "25404",
+    "https://www.walgreens.com/storelocator/pharmacy/martinsburg-wv"
+  ],
+  [
+    "Walgreens",
+    "Walgreens",
+    "26 Maddex Square Dr",
+    "Shepherdstown",
+    "WV",
+    "25443",
+    "https://www.walgreens.com/storelocator/pharmacy/martinsburg-wv"
+  ],
+  [
+    "Walgreens",
+    "Walgreens",
+    "22411 Jefferson Blvd",
+    "Smithsburg",
     "MD",
-    "20878",
-    "https://www.target.com/store-locator/find-stores/20878"
+    "21783",
+    "https://www.walgreens.com/storelocator/pharmacy/hagerstown-md"
   ],
   [
-    "Walmart",
-    "Winchester S Pleasant Valley Rd #1406",
-    "2350 S Pleasant Valley Rd",
+    "Walgreens",
+    "Walgreens",
+    "701 Fairfax Pike",
+    "Stephens City",
+    "VA",
+    "22655",
+    "https://www.walgreens.com/storelocator/pharmacy/stephens-city-va"
+  ],
+  [
+    "Walgreens",
+    "Walgreens",
+    "335 Crystal Ln",
+    "Strasburg",
+    "VA",
+    "22657",
+    "https://www.walgreens.com/storelocator/pharmacy/stephens-city-va"
+  ],
+  [
+    "Walgreens",
+    "Winchester - Jubal Early",
+    "645 E Jubal Early Dr",
     "Winchester",
     "VA",
     "22601",
-    "https://www.walmart.com/store/1406-winchester-va"
+    "https://www.walgreens.com/storelocator"
   ],
   [
-    "Walmart",
-    "Winchester Drive #3344",
-    "501 Wal Mart Dr",
-    "Winchester",
-    "VA",
-    "22603",
-    "https://www.walmart.com/store/3344-winchester-va"
-  ],
-  [
-    "Walmart",
-    "Winchester Maranto Manor #4514",
-    "201 Maranto Manor Dr",
+    "Walgreens",
+    "Winchester - Valley Mill",
+    "131 Valley Mill Rd",
     "Winchester",
     "VA",
     "22602",
-    "https://www.walmart.com/store/4514-winchester-va"
+    "https://www.walgreens.com/storelocator"
+  ],
+  [
+    "Walgreens",
+    "Walgreens",
+    "120 W Reservoir Rd",
+    "Woodstock",
+    "VA",
+    "22664",
+    "https://www.walgreens.com/storelocator/pharmacy/woodstock-va"
+  ],
+  [
+    "Walmart",
+    "Chantilly #5969",
+    "4368 Chantilly Shopping Center Dr",
+    "Chantilly",
+    "VA",
+    "20151",
+    "https://www.walmart.com/store-finder?location=20151"
+  ],
+  [
+    "Walmart",
+    "Dulles #3639",
+    "24635 Dulles Landing Dr",
+    "Dulles",
+    "VA",
+    "20166",
+    "https://www.walmart.com/store-finder?location=20166"
+  ],
+  [
+    "Walmart",
+    "Dumfries #3588",
+    "17041 Richmond Hwy",
+    "Dumfries",
+    "VA",
+    "22026",
+    "https://www.walmart.com/store-finder?location=22026"
+  ],
+  [
+    "Walmart",
+    "Fairfax #2015",
+    "13059 Fair Lakes Parkway",
+    "Fairfax",
+    "VA",
+    "22033",
+    "https://www.walmart.com/store-finder?location=22033"
   ],
   [
     "Walmart",
@@ -199,21 +802,12 @@
   ],
   [
     "Walmart",
-    "Martinsburg Foxcroft Ave #1703",
-    "800 Foxcroft Ave",
-    "Martinsburg",
-    "WV",
-    "25401",
-    "https://www.walmart.com/store-finder?location=25401"
-  ],
-  [
-    "Walmart",
-    "Martinsburg Hammonds Mill Rd #4423",
-    "5680 Hammonds Mill Rd",
-    "Martinsburg",
-    "WV",
-    "25404",
-    "https://www.walmart.com/store-finder?location=25404"
+    "Germantown #2357",
+    "20910 Frederick Rd",
+    "Germantown",
+    "MD",
+    "20876",
+    "https://www.walmart.com/store-finder?location=20876"
   ],
   [
     "Walmart",
@@ -235,48 +829,39 @@
   ],
   [
     "Walmart",
+    "Martinsburg Foxcroft Ave #1703",
+    "800 Foxcroft Ave",
+    "Martinsburg",
+    "WV",
+    "25401",
+    "https://www.walmart.com/store-finder?location=25401"
+  ],
+  [
+    "Walmart",
+    "Martinsburg Hammonds Mill Rd #4423",
+    "5680 Hammonds Mill Rd",
+    "Martinsburg",
+    "WV",
+    "25404",
+    "https://www.walmart.com/store-finder?location=25404"
+  ],
+  [
+    "Walmart",
+    "Walmart Mount Airy #2551",
+    "209 E Ridgeville Blvd",
+    "Mount Airy",
+    "MD",
+    "21771",
+    "https://www.walmart.com/store-finder?location=21771"
+  ],
+  [
+    "Walmart",
     "Sterling #2038",
     "45415 Dulles Crossing Plz",
     "Sterling",
     "VA",
     "20166",
     "https://www.walmart.com/store-finder?location=20166"
-  ],
-  [
-    "Walmart",
-    "Dulles #3639",
-    "24635 Dulles Landing Dr",
-    "Dulles",
-    "VA",
-    "20166",
-    "https://www.walmart.com/store-finder?location=20166"
-  ],
-  [
-    "Walmart",
-    "Chantilly #5969",
-    "4368 Chantilly Shopping Center Dr",
-    "Chantilly",
-    "VA",
-    "20151",
-    "https://www.walmart.com/store-finder?location=20151"
-  ],
-  [
-    "Walmart",
-    "Germantown #2357",
-    "20910 Frederick Rd",
-    "Germantown",
-    "MD",
-    "20876",
-    "https://www.walmart.com/store-finder?location=20876"
-  ],
-  [
-    "Walmart",
-    "Fairfax #2015",
-    "13059 Fair Lakes Parkway",
-    "Fairfax",
-    "VA",
-    "22033",
-    "https://www.walmart.com/store-finder?location=22033"
   ],
   [
     "Walmart",
@@ -289,173 +874,47 @@
   ],
   [
     "Walmart",
-    "Dumfries #3588",
-    "17041 Richmond Hwy",
-    "Dumfries",
+    "Walmart Warrenton #2437",
+    "700 James Madison Hwy",
+    "Warrenton",
     "VA",
-    "22026",
-    "https://www.walmart.com/store-finder?location=22026"
+    "20186",
+    "https://www.walmart.com/store-finder?location=20186"
   ],
   [
-    "Best Buy",
-    "Winchester #1086",
-    "601 E Jubal Early Dr",
+    "Walmart",
+    "Winchester Drive #3344",
+    "501 Wal Mart Dr",
     "Winchester",
     "VA",
-    "22601",
-    "https://stores.bestbuy.com/va/winchester.html"
+    "22603",
+    "https://www.walmart.com/store/3344-winchester-va"
   ],
   [
-    "Costco",
-    "Winchester #239",
-    "251 Front Royal Pike",
-    "Winchester",
-    "VA",
-    "22602",
-    "https://www.costco.com/warehouse-locations-239.html"
-  ],
-  [
-    "Costco",
-    "Leesburg #337",
-    "1300 Edwards Ferry Rd NE",
-    "Leesburg",
-    "VA",
-    "20176",
-    "https://www.costco.com/warehouse-locations.html"
-  ],
-  [
-    "Costco",
-    "Sterling #218",
-    "21398 Price Cascades Plz",
-    "Sterling",
-    "VA",
-    "20166",
-    "https://www.costco.com/warehouse-locations.html"
-  ],
-  [
-    "Costco",
-    "Chantilly #334",
-    "14390 Chantilly Crossing Ln",
-    "Chantilly",
-    "VA",
-    "20151",
-    "https://www.costco.com/warehouse-locations.html"
-  ],
-  [
-    "Costco",
-    "Manassas #225",
-    "10701 Sudley Manor Dr",
-    "Manassas",
-    "VA",
-    "20109",
-    "https://www.costco.com/warehouse-locations.html"
-  ],
-  [
-    "Costco",
-    "Frederick #330",
-    "10 Monocacy Blvd",
-    "Frederick",
-    "MD",
-    "21704",
-    "https://www.costco.com/warehouse-locations.html"
-  ],
-  [
-    "Hobby Lobby",
-    "Winchester #479",
-    "2047 S Pleasant Valley Rd",
-    "Winchester",
-    "VA",
-    "22601",
-    "https://www.hobbylobby.com/stores/search/479"
-  ],
-  [
-    "Hobby Lobby",
-    "Martinsburg",
-    "800 Foxcroft Ave",
-    "Martinsburg",
-    "WV",
-    "25401",
-    "https://www.hobbylobby.com/stores"
-  ],
-  [
-    "Hobby Lobby",
-    "Leesburg - Fort Evans Plaza II",
-    "240 Fort Evans Rd NE",
-    "Leesburg",
-    "VA",
-    "20176",
-    "https://www.hobbylobby.com/stores"
-  ],
-  [
-    "Hobby Lobby",
-    "Hagerstown - Valley Park Commons",
-    "1713 Massey Blvd",
-    "Hagerstown",
-    "MD",
-    "21740",
-    "https://www.hobbylobby.com/stores"
-  ],
-  [
-    "Dollar General",
-    "Winchester",
-    "2824 Valley Ave",
-    "Winchester",
-    "VA",
-    "22601",
-    "https://www.dollargeneral.com/store-directory/va/winchester"
-  ],
-  [
-    "Books-A-Million",
-    "Winchester",
-    "2198 S Pleasant Valley Rd",
-    "Winchester",
-    "VA",
-    "22601",
-    "https://www.booksamillion.com"
-  ],
-  [
-    "Gabe's",
-    "Winchester",
-    "130 Delco Plaza",
+    "Walmart",
+    "Winchester Maranto Manor #4514",
+    "201 Maranto Manor Dr",
     "Winchester",
     "VA",
     "22602",
-    "https://www.gabesstores.com"
+    "https://www.walmart.com/store/4514-winchester-va"
   ],
   [
-    "Walgreens",
-    "Winchester - Jubal Early",
-    "645 E Jubal Early Dr",
+    "Walmart",
+    "Winchester S Pleasant Valley Rd #1406",
+    "2350 S Pleasant Valley Rd",
     "Winchester",
     "VA",
     "22601",
-    "https://www.walgreens.com/storelocator"
+    "https://www.walmart.com/store/1406-winchester-va"
   ],
   [
-    "Walgreens",
-    "Winchester - Valley Mill",
-    "131 Valley Mill Rd",
-    "Winchester",
+    "Walmart",
+    "Walmart Woodstock",
+    "461 W Reservoir Rd",
+    "Woodstock",
     "VA",
-    "22602",
-    "https://www.walgreens.com/storelocator"
-  ],
-  [
-    "Barnes & Noble",
-    "Harrisonburg",
-    "289 Burgess Rd",
-    "Harrisonburg",
-    "VA",
-    "22801",
-    "https://stores.barnesandnoble.com"
-  ],
-  [
-    "Books-A-Million",
-    "Harrisonburg",
-    "1925 E Market St",
-    "Harrisonburg",
-    "VA",
-    "22801",
-    "https://www.booksamillion.com"
+    "22664",
+    "https://www.walmart.com/store-finder?location=22664"
   ]
 ]
