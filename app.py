@@ -39,10 +39,23 @@ def haversine(a,b,c,d):
  r=3958.7613; p1,p2=math.radians(a),math.radians(c)
  return 2*r*math.asin(math.sqrt(math.sin((p2-p1)/2)**2+math.cos(p1)*math.cos(p2)*math.sin(math.radians(d-b)/2)**2))
 def zip_origin(z):
- r=requests.get("https://geocoding.geo.census.gov/geocoder/locations/onelineaddress",params={"address":z+", USA","benchmark":"Public_AR_Current","format":"json"},headers=HEADERS,timeout=20); r.raise_for_status()
- matches=r.json().get("result",{}).get("addressMatches",[])
- if not matches: raise RuntimeError("ZIP code could not be geocoded by the US Census service")
- x=matches[0]["coordinates"]; return float(x["y"]),float(x["x"])
+ z=str(z).strip()
+ if not re.fullmatch(r'\d{5}',z): raise RuntimeError('Enter a valid 5-digit US ZIP code')
+ # ZIP-code endpoint; unlike the Census street-address endpoint, it accepts ZIP alone.
+ try:
+  r=requests.get('https://api.zippopotam.us/us/'+z,headers=HEADERS,timeout=20)
+  r.raise_for_status(); places=r.json().get('places',[])
+  if places:
+   return float(places[0]['latitude']),float(places[0]['longitude'])
+ except Exception as e:
+  log.warning('ZIP lookup service failed for %s: %s; trying Census',z,e)
+ # Census fallback using a city/state/ZIP query rather than ZIP-only address.
+ r=requests.get('https://geocoding.geo.census.gov/geocoder/locations/onelineaddress',
+  params={'address':'Winchester, Virginia '+z,'benchmark':'Public_AR_Current','format':'json'},headers=HEADERS,timeout=20)
+ r.raise_for_status()
+ matches=r.json().get('result',{}).get('addressMatches',[])
+ if not matches: raise RuntimeError('ZIP '+z+' could not be geocoded by ZIP lookup or Census fallback')
+ x=matches[0]['coordinates']; return float(x['y']),float(x['x'])
 def discover_stores():
  lat,lon=zip_origin(ZIP)
  # Search by retailer identity tags, not only shop=*; many chains are mapped
