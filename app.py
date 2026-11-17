@@ -393,8 +393,8 @@ def search_products(retailer, progress_callback=None):
     page_url=page_urls.pop(0)
     if page_url in seen_pages: continue
     seen_pages.add(page_url)
-    if progress_callback: progress_callback(0.05+0.25*len(seen_pages)/30,f"{retailer}: reading catalog page {len(seen_pages)} (up to 30)")
-    r=browser_get(page_url,timeout=30)
+    if progress_callback: progress_callback(0.02+0.18*len(seen_pages)/30,f"{retailer}: reading catalog page {len(seen_pages)} (up to 30)")
+    r=retailer_get(page_url,headers=HEADERS,timeout=18)
     r.raise_for_status()
     soup=BeautifulSoup(r.text,"html.parser")
     for a in soup.select("a[href]"):
@@ -439,8 +439,9 @@ def search_products(retailer, progress_callback=None):
  # Retailer-owned XML sitemaps are a no-search-engine discovery path and
  # can expose product URLs even when the site's search page is JS-rendered.
  sitemap_queue=[]
+ if progress_callback: progress_callback(0.22,f"{retailer}: checking retailer sitemap index")
  try:
-  robots=retailer_get("https://www."+domain+"/robots.txt",headers=HEADERS,timeout=12)
+  robots=retailer_get("https://www."+domain+"/robots.txt",headers=HEADERS,timeout=8)
   if robots.ok:
    for line in robots.text.splitlines():
     if line.lower().startswith("sitemap:"):
@@ -454,8 +455,9 @@ def search_products(retailer, progress_callback=None):
   sitemap_url=sitemap_queue.pop(0)
   if sitemap_url in sitemap_seen: continue
   sitemap_seen.add(sitemap_url)
+  if progress_callback: progress_callback(0.22+0.12*min(1,len(sitemap_seen)/40),f"{retailer}: checking sitemap {len(sitemap_seen)} of up to 40")
   try:
-   response=retailer_get(sitemap_url,headers=HEADERS,timeout=12)
+   response=retailer_get(sitemap_url,headers=HEADERS,timeout=8)
    if not response.ok: continue
    root=ET.fromstring(response.content)
    locs=[(node.text or "").strip() for node in root.iter() if node.tag.lower().endswith("loc") and node.text]
@@ -503,7 +505,7 @@ def search_products(retailer, progress_callback=None):
  def fetch_candidate(item):
   u,title=item
   try:
-   page=browser_get(u,timeout=18)
+   page=retailer_get(u,headers=HEADERS,timeout=18)
    if (not page.ok) or re.search(r"robot or human|captcha|verify you are human|access denied|unusual traffic",page.text[:30000],re.I):
     log.info("Retailer page blocked for %s; availability remains unknown",u)
     return item,None
@@ -710,7 +712,7 @@ def run_scan(kind):
  except Exception:
   SCAN_LOCK.release()
   raise
- total=0; notes=[]
+ total=0; notes=[]; retailer_failures=[]
  try:
   if kind in ("all","stores"):
    update_scan_progress(rid,1,"Discovering physical store locations",0,1)
@@ -727,8 +729,11 @@ def run_scan(kind):
       pct=10+int(60*(idx-1+bounded)/len(retailer_names)) if kind=="all" else int(95*(idx-1+bounded)/len(retailer_names))
       update_scan_progress(rid,pct,detail,idx-1,len(retailer_names))
      n=len(search_products(retailer,progress_callback=retailer_progress));total+=n;notes.append(f"{retailer}: {n} product pages")
-    except Exception as e: notes.append(f"{retailer}: {str(e)[:100]}")
-    update_scan_progress(rid,phase_pct,f"Scanned {retailer} product listings",idx,len(retailer_names))
+    except Exception as e:
+     retailer_failures.append(retailer)
+     notes.append(f"{retailer}: FAILED — {str(e)[:100]}")
+     log.exception("Product listing scan failed for %s",retailer)
+    update_scan_progress(rid,phase_pct,f"{retailer}: scan finished"+(" with errors" if retailer in retailer_failures else ""),idx,len(retailer_names))
   if kind in ("all","inventory"):
    base=70 if kind=="all" else 0
    span=29 if kind=="all" else 95
@@ -736,8 +741,11 @@ def run_scan(kind):
     pct=base+int(span*current/max(1,work_total))
     update_scan_progress(rid,pct,phase,current,work_total)
    result=scan_store_inventory(progress_callback=inventory_progress);total+=result["confirmed_products"];notes.append(result["message"])
-  msg="; ".join(notes); c=conn();c.execute("UPDATE poketrack_scan_runs SET finished_at=?,status='completed',found=?,message=?,progress=100,phase='Completed',current=1,total=1 WHERE id=?",(now(),total,msg,rid));c.commit();c.close()
-  return {"status":"completed","found":total,"message":msg}
+  msg="; ".join(notes)
+  final_status="partial" if retailer_failures else "completed"
+  final_phase="Completed with retailer errors" if retailer_failures else "Completed"
+  c=conn();c.execute("UPDATE poketrack_scan_runs SET finished_at=?,status=?,found=?,message=?,progress=100,phase=?,current=1,total=1 WHERE id=?",(now(),final_status,total,msg,final_phase,rid));c.commit();c.close()
+  return {"status":final_status,"found":total,"message":msg}
  except Exception as e:
   log.exception("scan failed");c=conn();c.execute("UPDATE poketrack_scan_runs SET finished_at=?,status='error',found=?,message=?,phase='Failed' WHERE id=?",(now(),total,str(e)[:500],rid));c.commit();c.close()
   return {"status":"error","found":total,"message":str(e)},500
