@@ -26,7 +26,8 @@ CREATE TABLE IF NOT EXISTS stores(id INTEGER PRIMARY KEY, retailer TEXT NOT NULL
  source TEXT NOT NULL, source_url TEXT, checked_at TEXT NOT NULL, UNIQUE(retailer,name,lat,lon));
 CREATE TABLE IF NOT EXISTS products(id INTEGER PRIMARY KEY, retailer TEXT NOT NULL, title TEXT NOT NULL,
  url TEXT NOT NULL UNIQUE, price TEXT, availability TEXT NOT NULL DEFAULT 'unknown',
- source TEXT NOT NULL, first_seen TEXT NOT NULL, last_seen TEXT NOT NULL);
+ source TEXT NOT NULL, first_seen TEXT NOT NULL, last_seen TEXT NOT NULL,
+ seller_verified INTEGER NOT NULL DEFAULT 0, seller_name TEXT, popularity_score INTEGER NOT NULL DEFAULT 0, popularity_reason TEXT);
 CREATE TABLE IF NOT EXISTS poketrack_scan_runs(id INTEGER PRIMARY KEY, kind TEXT NOT NULL, started_at TEXT NOT NULL,
  finished_at TEXT, status TEXT NOT NULL, found INTEGER DEFAULT 0, message TEXT);
 CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);
@@ -36,7 +37,11 @@ CREATE TABLE IF NOT EXISTS store_inventory_checks(store_id INTEGER PRIMARY KEY,s
 def now(): return datetime.now(timezone.utc).isoformat()
 def conn():
  os.makedirs(os.path.dirname(DB_PATH) or ".",exist_ok=True)
- c=sqlite3.connect(DB_PATH,timeout=60); c.row_factory=sqlite3.Row; c.execute("PRAGMA busy_timeout=60000"); c.executescript(SCHEMA); c.commit(); return c
+ c=sqlite3.connect(DB_PATH,timeout=60); c.row_factory=sqlite3.Row; c.execute("PRAGMA busy_timeout=60000"); c.executescript(SCHEMA)
+ cols={r[1] for r in c.execute("PRAGMA table_info(products)")}
+ for name,decl in [("seller_verified","INTEGER NOT NULL DEFAULT 0"),("seller_name","TEXT"),("popularity_score","INTEGER NOT NULL DEFAULT 0"),("popularity_reason","TEXT")]:
+  if name not in cols: c.execute(f"ALTER TABLE products ADD COLUMN {name} {decl}")
+ c.commit(); return c
 def haversine(a,b,c,d):
  r=3958.7613; p1,p2=math.radians(a),math.radians(c)
  return 2*r*math.asin(math.sqrt(math.sin((p2-p1)/2)**2+math.cos(p1)*math.cos(p2)*math.sin(math.radians(d-b)/2)**2))
