@@ -63,6 +63,8 @@ def discover_stores():
  with directory_path.open(encoding='utf-8') as f: branches=json.load(f)
  origin_lat,origin_lon=zip_origin(ZIP)
  cache={}; saved=0; c=conn()
+ # Remove obsolete Overpass-sourced map entries; preserve all product and scan history.
+ c.execute("DELETE FROM stores WHERE source='OpenStreetMap'")
  for retailer,name,street,city,state,postcode,source_url in branches:
   try:
    if postcode not in cache:
