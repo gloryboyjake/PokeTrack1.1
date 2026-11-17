@@ -24,7 +24,7 @@ RADIUS=int(os.getenv("RADIUS_MILES","80"))
 UA=os.getenv("USER_AGENT","Mozilla/5.0 (compatible; PokeTrackRadar/1.0)")
 HEADERS={"User-Agent":UA,"Accept-Language":"en-US,en;q=0.9"}
 JINA_CALLS=0
-JINA_CALL_LIMIT=16
+JINA_CALL_LIMIT=48
 JINA_LOCK=threading.Lock()
 def jina_read_url(target_url, timeout=8):
  global JINA_CALLS
@@ -486,6 +486,31 @@ def search_products(retailer, progress_callback=None):
     except Exception: pass
   except requests.RequestException as e:
    log.warning("Direct catalog unavailable for %s: %s; using public search fallback",retailer,e)
+ # Target's catalog is rendered dynamically and may return an incomplete page to
+ # ordinary HTTP clients. Use Jina Reader's text rendering as a fallback to
+ # collect actual Target product-page links across its paginated catalog.
+ if retailer=="Target" and len(found)<20:
+  from urllib.parse import urlsplit,urlunsplit,parse_qsl,urlencode
+  for page_no in range(32):
+   parts=urlsplit(catalog); params=dict(parse_qsl(parts.query))
+   params["Nao"]=str(page_no*24)
+   target_page=urlunsplit((parts.scheme,parts.netloc,parts.path,urlencode(params),parts.fragment))
+   if progress_callback: progress_callback(0.08+0.10*(page_no+1)/32,f"Target: reading catalog results page {page_no+1}/32")
+   rendered=jina_read_url(target_page,timeout=20)
+   if not rendered or not rendered.ok:
+    log.warning("Target rendered catalog page %s could not be read",page_no+1)
+    continue
+   page_text=rendered.text or ""
+   page_added=0
+   for match in re.finditer(r'\\[([^\\]\\n]{3,250})\\]\\((https?://[^)\\s]+)\\)',page_text):
+    title=re.sub(r"^\\d+†","",match.group(1)).strip()
+    url=match.group(2).rstrip(".,")
+    before=len(found)
+    add_candidate(url,title)
+    if len(found)>before: page_added+=1
+   log.info("Target rendered catalog page %s: %s product URLs collected (%s total)",page_no+1,page_added,len(found))
+   if page_no>=3 and page_added==0:
+    break
  # Retailer-owned XML sitemaps are a no-search-engine discovery path and
  # can expose product URLs even when the site's search page is JS-rendered.
  sitemap_queue=[]
@@ -577,6 +602,11 @@ def search_products(retailer, progress_callback=None):
   u,title=item
   try:
    page=retailer_get(u,headers=HEADERS,timeout=18)
+   if (retailer=="Target" and ((not page.ok) or re.search(r"robot or human|captcha|verify you are human|access denied|unusual traffic",page.text[:30000],re.I))):
+    rendered=jina_read_url(u,timeout=20)
+    if rendered and rendered.ok:
+     log.info("Target product page retrieved through rendered-page fallback: %s",u)
+     return item,rendered
    if (not page.ok) or re.search(r"robot or human|captcha|verify you are human|access denied|unusual traffic",page.text[:30000],re.I):
     log.info("Retailer page blocked for %s; availability remains unknown",u)
     return item,None
