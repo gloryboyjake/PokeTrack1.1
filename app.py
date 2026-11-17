@@ -45,24 +45,48 @@ def zip_origin(z):
  x=matches[0]["coordinates"]; return float(x["y"]),float(x["x"])
 def discover_stores():
  lat,lon=zip_origin(ZIP)
- query='[out:json][timeout:45];(node(around:%d,%s,%s)["shop"];way(around:%d,%s,%s)["shop"];relation(around:%d,%s,%s)["shop"];);out center tags;'% (RADIUS*1609,lat,lon,RADIUS*1609,lat,lon,RADIUS*1609,lat,lon)
- response=requests.post("https://overpass-api.de/api/interpreter",data=query,headers=HEADERS,timeout=65); response.raise_for_status()
- elements=response.json().get("elements",[]); saved=0; c=conn()
- aliases={"target":"Target","walmart":"Walmart","best buy":"Best Buy","costco":"Costco","sam's club":"Sam's Club","sams club":"Sam's Club","walgreens":"Walgreens","dollar general":"Dollar General","barnes & noble":"Barnes & Noble","barnes and noble":"Barnes & Noble","hobby lobby":"Hobby Lobby","books-a-million":"Books-A-Million","gabe's":"Gabe's"}
+ # Search by retailer identity tags, not only shop=*; many chains are mapped
+ # with brand/operator/name tags and some features are ways or relations.
+ pattern='(?i)target|walmart|best ?buy|costco|sam.?s club|walgreens|dollar general|barnes ?(&|and) ?noble|hobby lobby|books.?a.?million|gabe.?s'
+ around=f'(around:{RADIUS*1609},{lat},{lon})'
+ query='[out:json][timeout:60];('
+ for tag in ('name','brand','operator'):
+  query+=f'nwr{around}["{tag}"~"{pattern}"];'
+ query+=');out center tags;'
+ endpoints=['https://overpass-api.de/api/interpreter','https://overpass.kumi.systems/api/interpreter','https://overpass.private.coffee/api/interpreter']
+ data=None; errors=[]
+ for endpoint in endpoints:
+  try:
+   response=requests.post(endpoint,data=query,headers=HEADERS,timeout=75)
+   response.raise_for_status(); data=response.json(); break
+  except Exception as e:
+   errors.append(f'{endpoint}: {str(e)[:100]}')
+ if data is None: raise RuntimeError('All OpenStreetMap search endpoints failed: '+'; '.join(errors))
+ elements=data.get('elements',[]); saved=0; c=conn()
+ aliases={
+  'target':'Target','walmart':'Walmart','best buy':'Best Buy','bestbuy':'Best Buy',
+  'costco':'Costco',"sam's club": "Sam's Club",'sams club':"Sam's Club",
+  'walgreens':'Walgreens','dollar general':'Dollar General',
+  'barnes & noble':'Barnes & Noble','barnes and noble':'Barnes & Noble',
+  'hobby lobby':'Hobby Lobby','books-a-million':'Books-A-Million',
+  'books a million':'Books-A-Million',"gabe's": "Gabe's",'gabes':'Gabe\'s'
+ }
  for el in elements:
-  tags=el.get("tags",{}); raw=" ".join([tags.get("name",""),tags.get("brand",""),tags.get("operator","")]).strip()
+  tags=el.get('tags',{})
+  raw=' '.join([tags.get('name',''),tags.get('brand',''),tags.get('operator','')]).strip()
   key=raw.lower()
   retailer=next((v for k,v in aliases.items() if k in key),None)
   if not retailer: continue
-  p=el.get("center",el); y=p.get("lat"); x=p.get("lon")
+  p=el.get('center',el); y=p.get('lat'); x=p.get('lon')
   if y is None or x is None: continue
   dist=haversine(lat,lon,float(y),float(x))
   if dist>RADIUS: continue
-  addr=", ".join(filter(None,[tags.get("addr:housenumber","")+" "+tags.get("addr:street","") if tags.get("addr:street") else None,tags.get("addr:city"),tags.get("addr:state"),tags.get("addr:postcode")]))
-  c.execute("""INSERT INTO stores(retailer,name,address,city,state,postcode,lat,lon,distance,source,source_url,checked_at)
+  street=' '.join(filter(None,[tags.get('addr:housenumber'),tags.get('addr:street')]))
+  addr=', '.join(filter(None,[street,tags.get('addr:city'),tags.get('addr:state'),tags.get('addr:postcode')]))
+  c.execute('''INSERT INTO stores(retailer,name,address,city,state,postcode,lat,lon,distance,source,source_url,checked_at)
    VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(retailer,name,lat,lon) DO UPDATE SET address=excluded.address,
-   distance=excluded.distance,checked_at=excluded.checked_at""",
-   (retailer,raw or retailer,addr,tags.get("addr:city"),tags.get("addr:state"),tags.get("addr:postcode"),y,x,round(dist,1),"OpenStreetMap", "https://www.openstreetmap.org/"+el["type"]+"/"+str(el["id"]),now()))
+   distance=excluded.distance,checked_at=excluded.checked_at''',
+   (retailer,tags.get('name') or tags.get('brand') or raw or retailer,addr,tags.get('addr:city'),tags.get('addr:state'),tags.get('addr:postcode'),y,x,round(dist,1),'OpenStreetMap','https://www.openstreetmap.org/'+el['type']+'/'+str(el['id']),now()))
   saved+=1
  c.commit(); c.close(); return saved
 def clean_url(u):
