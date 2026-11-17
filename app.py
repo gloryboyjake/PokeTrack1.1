@@ -575,76 +575,63 @@ def inventory_status_from_product_page(page_text):
   return "in_stock",qty,(str(qty) if qty is not None else "count unavailable")
  return "unknown",None,"count unavailable"
 def scan_store_inventory():
- # Google-only pilot: query Google web results for each exact branch, then retain
- # only retailer-owned Pokémon product URLs with explicit branch/stock wording.
- c=conn()
- stores=[dict(x) for x in c.execute("SELECT * FROM stores ORDER BY retailer,distance")]
+ # Google-only branch lookup with Jina Reader fallback when Google blocks server requests.
+ c=conn(); stores=[dict(x) for x in c.execute("SELECT * FROM stores ORDER BY retailer,distance")]
  checked=0; confirmed=0; unknown=0; errors=0
  for store in stores:
-  retailer=store["retailer"]
-  domain=RETAILERS.get(retailer,(None,))[0]
-  if not domain:
-   continue
-  branch_name=(store.get("name") or "").strip()
-  address=(store.get("address") or "").strip()
-  city=(store.get("city") or "").strip()
-  state=(store.get("state") or "").strip()
-  branch_terms=[x for x in (branch_name,address,city) if x]
-  query=f'site:{domain} Pokémon trading cards "in stock" OR "out of stock" "{city}" "{state}"'
+  retailer=store["retailer"]; domain=RETAILERS.get(retailer,(None,))[0]
+  if not domain: continue
+  branch_name=(store.get("name") or "").strip(); address=(store.get("address") or "").strip()
+  city=(store.get("city") or "").strip(); state=(store.get("state") or "").strip()
+  query=f'site:{domain} Pokémon TCG trading cards "{city}" "{state}"'
   if address: query+=f' "{address}"'
+  google_url="https://www.google.com/search?"+requests.compat.urlencode({"num":20,"q":query})
+  search_text=""
   try:
-   response=search_get("https://www.google.com/search",params={"num":20,"q":query},headers=HEADERS,timeout=12)
-   if response.status_code==429 or re.search(r"unusual traffic|not a robot|captcha|consent\.google\.com",response.text[:30000],re.I):
-    errors+=1
-    log.warning("Google branch search blocked for %s, %s; stock remains unknown",retailer,branch_name)
-    c.execute("INSERT INTO store_inventory_checks(store_id,status,checked_at,detail) VALUES(?,?,?,?) ON CONFLICT(store_id) DO UPDATE SET status=excluded.status,checked_at=excluded.checked_at,detail=excluded.detail",
-     (store["id"],"error",now(),"Google did not return usable results; no stock status was inferred."))
-    c.commit()
-    continue
-   response.raise_for_status()
+   response=search_get("https://www.google.com/search",params={"num":20,"q":query},headers=HEADERS,timeout=10)
+   blocked=(response.status_code==429 or re.search(r"unusual traffic|not a robot|captcha|consent\\.google\\.com",response.text[:30000],re.I))
+   if not blocked: response.raise_for_status(); search_text=response.text
+   else: log.warning("Google blocked branch lookup for %s %s; trying Jina Reader",retailer,branch_name)
   except requests.RequestException as e:
+   log.warning("Google lookup failed for %s %s: %s; trying Jina Reader",retailer,branch_name,e)
+  if not search_text:
+   proxy=jina_read_url(google_url,timeout=18)
+   if proxy and proxy.ok and len(proxy.text)>100: search_text=proxy.text
+  if not search_text:
    errors+=1
-   log.warning("Google branch search failed for %s, %s: %s",retailer,branch_name,e)
-   c.execute("INSERT INTO store_inventory_checks(store_id,status,checked_at,detail) VALUES(?,?,?,?) ON CONFLICT(store_id) DO UPDATE SET status=excluded.status,checked_at=excluded.checked_at,detail=excluded.detail",
-    (store["id"],"error",now(),"Google search request failed; stock remains unknown."))
-   c.commit()
+   detail="Google and Jina Reader returned no usable results; stock was not inferred."
+   c.execute("INSERT INTO store_inventory_checks(store_id,status,checked_at,detail) VALUES(?,?,?,?) ON CONFLICT(store_id) DO UPDATE SET status=excluded.status,checked_at=excluded.checked_at,detail=excluded.detail",(store["id"],"error",now(),detail)); c.commit()
    continue
-  soup=BeautifulSoup(response.text,"html.parser")
-  blocks=soup.select("div.MjjYud") or soup.select("div.g")
+  soup=BeautifulSoup(search_text,"html.parser"); blocks=soup.select("div.MjjYud") or soup.select("div.g")
   branch_results=[]
   for block in blocks:
-   text_block=block.get_text(" ",strip=True)
-   normalized=(text_block+" "+branch_name+" "+address).lower()
-   # Require a branch clue beyond just the chain name.
-   branch_match=bool((address and address.lower() in text_block.lower()) or
-     (city and city.lower() in text_block.lower() and (state.lower() in text_block.lower() if state else True)) or
-     (branch_name and branch_name.lower() not in (retailer.lower(),"") and branch_name.lower() in text_block.lower()))
-   if not branch_match:
-    continue
+   snippet=block.get_text(" ",strip=True); low=snippet.lower()
+   branch_match=bool((address and address.lower() in low) or (city and city.lower() in low and (state.lower() in low if state else True)) or (branch_name and branch_name.lower() not in (retailer.lower(),"") and branch_name.lower() in low))
+   if not branch_match: continue
    for a in block.select("a[href]"):
     url=clean_url(a.get("href",""))
-    if not url or not retailer_domain_match(url,domain) or not retailer_product_url_is_valid(retailer,url):
-     continue
+    if not url or not retailer_domain_match(url,domain) or not retailer_product_url_is_valid(retailer,url): continue
     title=a.get_text(" ",strip=True)
     if len(title)<8:
-     h=block.select_one("h3")
-     title=h.get_text(" ",strip=True) if h else ""
-    combined=(title+" "+text_block).strip()
-    if not is_pokemon_tcg_title(combined):
-     continue
-    low=text_block.lower()
-    if re.search(r"\b(out of stock|sold out|currently unavailable|not available)\b",low):
-     status="out_of_stock"
-    elif re.search(r"\b(in stock|available for pickup|available now|add to cart)\b",low):
-     status="in_stock"
-    else:
-     status="unknown"
-    branch_results.append((url,title[:250] or "Pokémon TCG product",status,text_block[:1000]))
-  # Replace this branch's previous Google snapshot; never carry stale in-stock flags forward.
-  c.execute("DELETE FROM store_inventory WHERE store_id=?",(store["id"],))
+     h=block.select_one("h3"); title=h.get_text(" ",strip=True) if h else ""
+    if not is_pokemon_tcg_title(title+" "+snippet): continue
+    status="out_of_stock" if re.search(r"\\b(out of stock|sold out|currently unavailable|not available)\\b",low) else ("in_stock" if re.search(r"\\b(in stock|available for pickup|available now|add to cart)\\b",low) else "unknown")
+    branch_results.append((url,title[:250] or "Pokémon TCG product",status,snippet[:1000]))
+  if not branch_results and "URL Source:" in search_text:
+   for match in re.finditer(r"(?m)^\\[([^\\]]{5,250})\\]\\((https?://[^)]+)\\)",search_text):
+    title=match.group(1).strip(); url=clean_url(match.group(2))
+    if not url or not retailer_domain_match(url,domain) or not retailer_product_url_is_valid(retailer,url): continue
+    snippet=re.sub(r"\\s+"," ",search_text[max(0,match.start()-350):min(len(search_text),match.end()+700)])
+    low=snippet.lower()
+    if not is_pokemon_tcg_title(title+" "+snippet): continue
+    branch_match=bool((address and address.lower() in low) or (city and city.lower() in low and (state.lower() in low if state else True)) or (branch_name and branch_name.lower() in low))
+    if not branch_match: continue
+    status="out_of_stock" if re.search(r"\\b(out of stock|sold out|currently unavailable|not available)\\b",low) else ("in_stock" if re.search(r"\\b(in stock|available for pickup|available now|add to cart)\\b",low) else "unknown")
+    branch_results.append((url,title[:250],status,snippet[:1000]))
   unique={}
-  for row in branch_results:
-   unique.setdefault(row[0],row)
+  for row in branch_results: unique.setdefault(row[0],row)
+  # Preserve the last snapshot if the search succeeded but returned no branch-specific products.
+  if unique: c.execute("DELETE FROM store_inventory WHERE store_id=?",(store["id"],))
   for url,title,status,snippet in unique.values():
    checked_at=now()
    c.execute("""INSERT INTO store_inventory(store_id,product_url,product_title,status,quantity,quantity_label,source_url,detail,checked_at)
@@ -653,15 +640,12 @@ def scan_store_inventory():
    if status=="in_stock": confirmed+=1
    elif status=="unknown": unknown+=1
   in_stock_here=sum(1 for x in unique.values() if x[2]=="in_stock")
-  state="checked" if unique else "no_match"
-  detail=f"Google-only branch search: {in_stock_here} product(s) explicitly described as in stock; {len(unique)-in_stock_here} other product result(s). Google snippets are not guaranteed live store inventory."
-  c.execute("INSERT INTO store_inventory_checks(store_id,status,checked_at,detail) VALUES(?,?,?,?) ON CONFLICT(store_id) DO UPDATE SET status=excluded.status,checked_at=excluded.checked_at,detail=excluded.detail",
-   (store["id"],state,now(),detail))
-  c.commit()
-  checked+=1
-  time.sleep(0.15)
+  state_value="checked" if unique else "no_match"
+  detail=f"Google-only branch lookup: {in_stock_here} product listing(s) explicitly said in stock; {len(unique)-in_stock_here} other result(s). Google snippets can be stale, not a live shelf count."
+  c.execute("INSERT INTO store_inventory_checks(store_id,status,checked_at,detail) VALUES(?,?,?,?) ON CONFLICT(store_id) DO UPDATE SET status=excluded.status,checked_at=excluded.checked_at,detail=excluded.detail",(store["id"],state_value,now(),detail))
+  c.commit(); checked+=1; time.sleep(0.25)
  c.close()
- return {"confirmed_products":confirmed,"message":f"Google-only branch search checked {checked} stores; {confirmed} product/store results explicitly said in stock; {unknown} had unknown availability; {errors} Google requests failed. Counts are product listings, not physical unit quantities."}
+ return {"confirmed_products":confirmed,"message":f"Google-only branch lookup checked {checked} stores; {confirmed} product/store results explicitly said in stock; {unknown} had unknown availability; {errors} searches failed. Counts are product listings, not unit quantities."}
 
 def run_scan(kind):
  global JINA_CALLS
