@@ -151,14 +151,14 @@ def clean_url(u):
 def direct_catalog_url(retailer):
  # Public retailer catalog/search pages; no search-engine result pages or paid APIs.
  urls={
-  "Target":"https://www.target.com/s?searchTerm=pokemon%20trading%20cards",
-  "Walmart":"https://www.walmart.com/search?q=pokemon%20trading%20cards",
-  "Walgreens":"https://www.walgreens.com/search/results.jsp?Ntt=pokemon%20trading%20cards",
-  "Best Buy":"https://www.bestbuy.com/site/searchpage.jsp?st=pokemon+trading+cards",
+  "Target":"https://www.target.com/c/trading-card-games-cards-toys/pokemon/-/N-d4gjqZ569t0",
+  "Walmart":"https://www.walmart.com/cp/pokemon/3580439",
+  "Walgreens":"https://www.walgreens.com/q/all-pokemon-cards",
+  "Best Buy":"https://www.bestbuy.com/site/pokemon/pokemon-trading-cards/pcmcat1741200145801.c",
   "Barnes & Noble":"https://www.barnesandnoble.com/s/pokemon",
   "Costco":"https://www.costco.com/CatalogSearch?keyword=pokemon",
-  "Sam's Club":"https://www.samsclub.com/s/pokemon",
-  "Dollar General":"https://www.dollargeneral.com/search?query=pokemon",
+  "Sam's Club":"https://www.samsclub.com/browse/Pokemon/16860219",
+  "Dollar General":"https://www.dollargeneral.com/c/toys?page=4",
   "Hobby Lobby":"https://www.hobbylobby.com/search/?q=pokemon",
   "Books-A-Million":"https://www.booksamillion.com/search?query=pokemon",
   "Gabe's":"https://www.gabesstores.com/",
