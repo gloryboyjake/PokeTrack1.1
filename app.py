@@ -369,6 +369,9 @@ def search_products(retailer):
   ("web",f"site:{domain} Pokemon TCG booster ETB tin"),
   ("web",f"site:{domain} Pokemon 30th anniversary OR Ascended Heroes OR Mega Evolution OR Chaos Rising OR Pitch Black OR Prismatic Evolutions OR Delta Reign")
  ]
+ for term in restockr_product_terms()[:6]:
+  searches.append(("shopping",f'"{term}" {retailer}'))
+  searches.append(("web",f'site:{domain} "{term}"'))
  if len(search_found)<10 and not GOOGLE_RATE_LIMITED:
   for mode,q in searches:
    try:
