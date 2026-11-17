@@ -614,33 +614,25 @@ def scan_store_inventory():
  target_key=os.getenv("TARGET_REDSKY_KEY","ff457966e64d5e877fdbad070f276d18ecec4a01")
  session=requests.Session()
  session.headers.update({**HEADERS,"Origin":"https://www.target.com","Referer":"https://www.target.com/"})
+ # Target publishes an official store-number directory. Use those stable store IDs
+ # instead of the retired /v3/stores/nearby endpoint (which now returns HTTP 410).
+ # Keys are ZIP codes; Sterling has two stores so its street address is checked too.
+ target_store_ids={
+  "22601":"1234","22603":"2379","22630":"2297","25403":"2538",
+  "20176":"1874","21740":"1257","20155":"1873","20151":"1827",
+  "22033":"1341","22701":"2250","20190":"1088","20878":"1193",
+  "20876":"1046","17201":"2241","21704":"1137","20109":"2323",
+ }
  def target_store_id(store):
-  # Resolve by ZIP using Target's own nearby-store endpoint, then match the saved branch.
-  url=f"https://redsky.target.com/v3/stores/nearby/{store.get('postcode','')}"
-  try:
-   r=session.get(url,params={"key":target_key,"limit":50,"within":100,"unit":"mile"},timeout=15)
-   r.raise_for_status(); data=r.json()
-   candidates=[]
-   def walk(obj):
-    if isinstance(obj,dict):
-     loc=obj.get("location_id") or obj.get("store_id") or obj.get("storeId")
-     addr=obj.get("address") or obj.get("address_line1") or obj.get("addressLine1") or ""
-     city=obj.get("city") or ""
-     if loc: candidates.append((str(loc),str(addr),str(city),json.dumps(obj).lower()))
-     for v in obj.values():
-      if isinstance(v,(dict,list)): walk(v)
-    elif isinstance(obj,list):
-     for v in obj: walk(v)
-   walk(data)
-   city=(store.get("city") or "").lower()
-   street=(store.get("address") or "").split(",")[0].lower()
-   for sid,addr,ct,raw in candidates:
-    if city and city in (ct.lower()+" "+raw) and (not street or street.split()[0] in (addr.lower()+" "+raw)):
-     return sid
-   for sid,addr,ct,raw in candidates:
-    if city and city in (ct.lower()+" "+raw): return sid
-  except Exception as e:
-   log.warning("Target store resolution failed for %s: %s",store.get("name"),str(e)[:180])
+  postcode=str(store.get("postcode") or "")
+  sid=target_store_ids.get(postcode)
+  street=(store.get("address") or "").lower()
+  if postcode=="20166":
+   if "45130" in street or "columbia" in street: sid="2272"
+   elif "arcola" in street or "24670" in street: sid="2938"
+  if sid:
+   return sid
+  log.warning("No official Target store number mapped for %s (%s)",store.get("name"),postcode)
   return None
  def target_fulfillment(tcin,store):
   params={"key":target_key,"tcin":tcin,"store_id":store_id,"store_positions_store_id":store_id,
