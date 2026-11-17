@@ -16,7 +16,7 @@ UA=os.getenv("USER_AGENT","Mozilla/5.0 (compatible; PokeTrackRadar/1.0)")
 HEADERS={"User-Agent":UA,"Accept-Language":"en-US,en;q=0.9"}
 RETAILERS={
  "Target":["target.com"],"Walmart":["walmart.com"],"Best Buy":["bestbuy.com"],
- "Amazon":["amazon.com"],"Barnes & Noble":["barnesandnoble.com"],"Costco":["costco.com"],
+"Barnes & Noble":["barnesandnoble.com"],"Costco":["costco.com"],
  "Sam's Club":["samsclub.com"],"Walgreens":["walgreens.com"],"Dollar General":["dollargeneral.com"],
  "Hobby Lobby":["hobbylobby.com"],"Books-A-Million":["booksamillion.com"],"Gabe's":["gabesstores.com"]
 }
