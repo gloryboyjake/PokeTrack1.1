@@ -156,6 +156,9 @@ def conn():
     cols={r[1] for r in c.execute("PRAGMA table_info(products)")}
     for name,decl in [("last_checked","TEXT NOT NULL DEFAULT ''"),("seller_verified","INTEGER NOT NULL DEFAULT 0"),("seller_name","TEXT"),("popularity_score","INTEGER NOT NULL DEFAULT 0"),("popularity_reason","TEXT"),("discovery_sources","TEXT"),("stock_checked_at","TEXT")]:
      if name not in cols: c.execute(f"ALTER TABLE products ADD COLUMN {name} {decl}")
+    # A worker thread cannot survive a Railway container restart. Close stale
+    # running rows so the dashboard never displays a permanently frozen scan.
+    c.execute("UPDATE poketrack_scan_runs SET status='interrupted',finished_at=?,phase='Interrupted by service restart' WHERE status='running'",(now(),))
     c.commit()
     DB_READY=True
  else:
