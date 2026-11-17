@@ -27,20 +27,14 @@ CREATE TABLE IF NOT EXISTS stores(id INTEGER PRIMARY KEY, retailer TEXT NOT NULL
 CREATE TABLE IF NOT EXISTS products(id INTEGER PRIMARY KEY, retailer TEXT NOT NULL, title TEXT NOT NULL,
  url TEXT NOT NULL UNIQUE, price TEXT, availability TEXT NOT NULL DEFAULT 'unknown',
  source TEXT NOT NULL, first_seen TEXT NOT NULL, last_seen TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS scan_runs(id INTEGER PRIMARY KEY, kind TEXT NOT NULL, started_at TEXT NOT NULL,
+CREATE TABLE IF NOT EXISTS poketrack_scan_runs(id INTEGER PRIMARY KEY, kind TEXT NOT NULL, started_at TEXT NOT NULL,
  finished_at TEXT, status TEXT NOT NULL, found INTEGER DEFAULT 0, message TEXT);
 CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);
 """
 def now(): return datetime.now(timezone.utc).isoformat()
 def conn():
  os.makedirs(os.path.dirname(DB_PATH) or ".",exist_ok=True)
- c=sqlite3.connect(DB_PATH,timeout=60); c.row_factory=sqlite3.Row; c.execute("PRAGMA busy_timeout=60000"); c.execute("PRAGMA journal_mode=WAL"); c.executescript(SCHEMA)
- cols={row["name"] for row in c.execute("PRAGMA table_info(scan_runs)")}
- if "kind" not in cols: c.execute("ALTER TABLE scan_runs ADD COLUMN kind TEXT NOT NULL DEFAULT 'all'")
- if "finished_at" not in cols: c.execute("ALTER TABLE scan_runs ADD COLUMN finished_at TEXT")
- if "found" not in cols: c.execute("ALTER TABLE scan_runs ADD COLUMN found INTEGER DEFAULT 0")
- if "message" not in cols: c.execute("ALTER TABLE scan_runs ADD COLUMN message TEXT")
- c.commit(); return c
+ c=sqlite3.connect(DB_PATH,timeout=60); c.row_factory=sqlite3.Row; c.execute("PRAGMA busy_timeout=60000"); c.executescript(SCHEMA); c.commit(); return c
 def haversine(a,b,c,d):
  r=3958.7613; p1,p2=math.radians(a),math.radians(c)
  return 2*r*math.asin(math.sqrt(math.sin((p2-p1)/2)**2+math.cos(p1)*math.cos(p2)*math.sin(math.radians(d-b)/2)**2))
@@ -114,7 +108,7 @@ def run_scan(kind):
  if not SCAN_LOCK.acquire(blocking=False):
   return {"status":"busy","message":"A scan is already running. Please wait for it to finish."},409
  try:
-  c=conn(); cur=c.execute("INSERT INTO scan_runs(kind,started_at,status) VALUES(?,?,?)",(kind,now(),"running")); rid=cur.lastrowid;c.commit();c.close()
+  c=conn(); cur=c.execute("INSERT INTO poketrack_scan_runs(kind,started_at,status) VALUES(?,?,?)",(kind,now(),"running")); rid=cur.lastrowid;c.commit();c.close()
  except Exception:
   SCAN_LOCK.release()
   raise
@@ -127,7 +121,7 @@ def run_scan(kind):
     try:
      n=len(search_products(retailer));total+=n;notes.append(f"{retailer}: {n} product pages")
     except Exception as e: notes.append(f"{retailer}: {str(e)[:100]}")
-  msg="; ".join(notes); c=conn();c.execute("UPDATE scan_runs SET finished_at=?,status='completed',found=?,message=? WHERE id=?",(now(),total,msg,rid));c.commit();c.close()
+  msg="; ".join(notes); c=conn();c.execute("UPDATE poketrack_scan_runs SET finished_at=?,status='completed',found=?,message=? WHERE id=?",(now(),total,msg,rid));c.commit();c.close()
   return {"status":"completed","found":total,"message":msg}
  except Exception as e:
   log.exception("scan failed");c=conn();c.execute("UPDATE scan_runs SET finished_at=?,status='error',found=?,message=? WHERE id=?",(now(),total,str(e)[:500],rid));c.commit();c.close()
@@ -163,10 +157,10 @@ def api_products():
  c=conn();rows=[dict(x) for x in c.execute("SELECT * FROM products ORDER BY last_seen DESC LIMIT 2000")];c.close();return jsonify(products=rows)
 @app.get("/api/history")
 def api_history():
- c=conn();rows=[dict(x) for x in c.execute("SELECT * FROM scan_runs ORDER BY id DESC LIMIT 100")];c.close();return jsonify(runs=rows)
+ c=conn();rows=[dict(x) for x in c.execute("SELECT * FROM poketrack_scan_runs ORDER BY id DESC LIMIT 100")];c.close();return jsonify(runs=rows)
 @app.get("/api/summary")
 def summary():
- c=conn();last=c.execute("SELECT finished_at FROM scan_runs WHERE status='completed' ORDER BY id DESC LIMIT 1").fetchone();c.close();return jsonify(last_scan=last[0] if last else None,zip=ZIP,radius=RADIUS)
+ c=conn();last=c.execute("SELECT finished_at FROM poketrack_scan_runs WHERE status='completed' ORDER BY id DESC LIMIT 1").fetchone();c.close();return jsonify(last_scan=last[0] if last else None,zip=ZIP,radius=RADIUS)
 @app.post("/api/scan")
 def api_scan():
  kind=request.args.get("kind","all")
