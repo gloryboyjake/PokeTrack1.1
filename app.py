@@ -63,34 +63,47 @@ def retailer_get(url, **kwargs):
  return requests.get(url,**kwargs)
 
 def browser_get(url, timeout=25, store=None):
- # Render the real retailer page in Chromium; do not spoof fingerprints or bypass
- # access controls. If the retailer blocks automation, return the visible block page
- # so the caller records UNKNOWN instead of manufacturing inventory.
- try:
-  from playwright.sync_api import sync_playwright
- except Exception as e:
-  raise RuntimeError("Playwright browser runtime is not installed: "+str(e))
+ # Real Chromium session: navigate and interact with retailer UI, without spoofing
+ # browser fingerprints or defeating CAPTCHA/access controls.
+ from playwright.sync_api import sync_playwright
  with sync_playwright() as p:
   browser=p.chromium.launch(headless=True,args=["--no-sandbox"])
   context=browser.new_context(locale="en-US",timezone_id="America/New_York",viewport={"width":1365,"height":900})
   page=context.new_page()
-  target_url=url
-  if store and "target.com" in (urlparse(url).hostname or ""):
-   from urllib.parse import urlencode, urlsplit, urlunsplit, parse_qsl
-   parts=urlsplit(url); query=dict(parse_qsl(parts.query)); query["preselect"]=str(store.get("store_number",""))
-   target_url=urlunsplit((parts.scheme,parts.netloc,parts.path,urlencode({k:v for k,v in query.items() if v}),parts.fragment))
-  response=page.goto(target_url,wait_until="domcontentloaded",timeout=timeout*1000)
+  response=page.goto(url,wait_until="domcontentloaded",timeout=timeout*1000)
   try: page.wait_for_load_state("networkidle",timeout=min(8000,timeout*1000))
   except Exception: pass
-  page.wait_for_timeout(1200)
-  # A small scroll triggers lazy-loaded product/availability content as in normal browsing.
-  page.evaluate("window.scrollTo(0, Math.min(document.body.scrollHeight, 700))")
+  if store and "target.com" in (urlparse(url).hostname or ""):
+   # Use the visible store selector where present; never assume a ZIP alone proves
+   # that the selected branch changed.
+   try:
+    for label in ("Change store","Choose store","Edit store","My store"):
+     locator=page.get_by_text(label,exact=False).first
+     if locator.count():
+      locator.click(timeout=1500); page.wait_for_timeout(700); break
+    fields=page.locator("input:visible")
+    for idx in range(min(fields.count(),8)):
+     field=fields.nth(idx)
+     placeholder=(field.get_attribute("placeholder") or "").lower()
+     aria=(field.get_attribute("aria-label") or "").lower()
+     if any(x in placeholder+aria for x in ("zip","city","state","location","store")):
+      field.fill(str(store.get("postcode") or store.get("city") or "")); page.wait_for_timeout(1300)
+      target_label=store.get("name") or store.get("city") or ""
+      option=page.get_by_text(target_label,exact=False).last
+      if option.count(): option.click(timeout=2000); page.wait_for_timeout(700)
+      for action in ("Save","Use this store","Select store","Set as my store","Confirm"):
+       btn=page.get_by_role("button",name=re.compile(action,re.I)).first
+       if btn.count():
+        btn.click(timeout=1500); page.wait_for_timeout(1200); break
+      break
+   except Exception as e:
+    log.info("Visible Target store selector could not be completed for %s: %s",store.get("name"),str(e)[:140])
+  page.wait_for_timeout(1000)
+  page.evaluate("window.scrollTo(0, Math.min(document.body.scrollHeight, 800))")
   page.wait_for_timeout(500)
-  html=page.content()
-  status=response.status if response else 200
-  final_url=page.url
+  html=page.content(); status=response.status if response else 200; final_url=page.url
   browser.close()
-  from types import SimpleNamespace
+ from types import SimpleNamespace
  result=SimpleNamespace(ok=status<400,status_code=status,text=html,url=final_url)
  def raise_for_status():
   if status>=400: raise requests.HTTPError(f"HTTP {status} for {final_url}")
