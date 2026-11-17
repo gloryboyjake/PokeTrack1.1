@@ -286,7 +286,7 @@ SEED_PRODUCT_URLS={
 
 def retailer_product_url_is_valid(retailer,url):
  path=(urlparse(url).path or "").lower()
- if retailer=="Target": return bool(re.match(r"^/p/-/a-\d+",path))
+ if retailer=="Target": return path.startswith("/p/") and bool(re.search(r"/a-\d+",path))
  if retailer=="Walmart": return bool(re.match(r"^/ip/(?:[^/]+/)?\d+",path))
  if retailer=="Best Buy": return path.startswith("/product/") or bool(re.match(r"^/site/.+\.p",path))
  if path.startswith(("/search","/s/","/q/","/c/","/category/","/browse/")): return False
