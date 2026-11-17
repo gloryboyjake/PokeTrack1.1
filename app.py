@@ -169,6 +169,7 @@ def search_products(retailer):
    page=requests.get(u,headers=HEADERS,timeout=18)
    if page.ok:
     ps=BeautifulSoup(page.text,"html.parser")
+    page_text=ps.get_text(" ",strip=True)
     og=ps.find("meta",property="og:title")
     if og and og.get("content"): title=og["content"][:250]
     for sel in ['meta[property="product:price:amount"]','meta[itemprop="price"]']:
@@ -178,10 +179,13 @@ def search_products(retailer):
   except requests.RequestException as e:
    log.warning("Product page fetch failed for %s: %s",u,e)
   if not is_pokemon_tcg_title(title): continue
-  t=now(); c.execute("""INSERT INTO products(retailer,title,url,price,availability,source,first_seen,last_seen)
-   VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(url) DO UPDATE SET title=excluded.title,price=COALESCE(excluded.price,products.price),
-   availability=excluded.availability,source=excluded.source,last_seen=excluded.last_seen""",(retailer,title,u,price,stock,source,t,t))
-  products.append({"retailer":retailer,"title":title,"url":u,"price":price,"availability":stock})
+  verified,seller=verify_retailer_seller(retailer,page_text)
+  if not verified: continue
+  score,reason=popularity_for(title,page_text)
+  t=now(); c.execute("""INSERT INTO products(retailer,title,url,price,availability,source,first_seen,last_seen,seller_verified,seller_name,popularity_score,popularity_reason)
+   VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(url) DO UPDATE SET title=excluded.title,price=COALESCE(excluded.price,products.price),seller_verified=1,seller_name=excluded.seller_name,popularity_score=excluded.popularity_score,popularity_reason=excluded.popularity_reason,
+   availability=excluded.availability,source=excluded.source,last_seen=excluded.last_seen""",(retailer,title,u,price,stock,source,t,t,1,seller,score,reason))
+  products.append({"retailer":retailer,"title":title,"url":u,"price":price,"availability":stock,"seller":seller,"popularity_score":score,"popularity_reason":reason})
  c.commit(); c.close(); return products
 def branch_stock_status(blob):
  blob=(blob or "").lower()
@@ -217,7 +221,7 @@ def scan_store_inventory():
  # Visit retailer-owned product pages directly. No Google/Bing snippets are used.
  c=conn()
  stores=[dict(x) for x in c.execute("SELECT * FROM stores ORDER BY retailer,distance")]
- products=[dict(x) for x in c.execute("SELECT * FROM products ORDER BY last_seen DESC")]
+ products=[dict(x) for x in c.execute("SELECT * FROM products WHERE seller_verified=1 ORDER BY popularity_score DESC,last_seen DESC")]
  by_retailer={}
  for p in products: by_retailer.setdefault(p["retailer"],[]).append(p)
  checked=0; confirmed=0; errors=0
