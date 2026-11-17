@@ -366,10 +366,7 @@ def search_products(retailer):
   log.info("%s: %s Pokémon URLs found in retailer-owned sitemaps",retailer,sitemap_product_count)
  search_found={}
  # Public TrackaLacker listings add candidate retailer URLs; retailer pages still decide final stock.
- tracker_found=tracker_candidates(retailer)
- log.info("%s: TrackaLacker supplied %s direct product candidates",retailer,len(tracker_found))
- for u,title in tracker_found.items():
-  search_found.setdefault(u,title)
+ log.info("%s: using third-party tracker product names in retailer search",retailer)
  # Optional free-reference BujusJuJus feed (set BUJUS_API_KEY in Railway to enable).
  api_key=os.getenv("BUJUS_API_KEY","").strip()
  if api_key:
