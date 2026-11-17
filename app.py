@@ -525,6 +525,52 @@ def search_products(retailer, progress_callback=None):
  if sitemap_product_count:
   log.info("%s: %s Pokémon URLs found in retailer-owned sitemaps",retailer,sitemap_product_count)
  search_found={}
+ # Free, keyless Bing RSS discovery. This is a public search-results feed:
+ # no account, API key, paid proxy, or third-party scraping service is used.
+ # Search results only discover candidate retailer URLs; retailer pages below
+ # remain the source of truth for product identity and availability.
+ search_terms=[
+  "Pokemon TCG trading cards",
+  "Pokemon Elite Trainer Box",
+  "Pokemon booster bundle",
+  "Pokemon 30th Celebration cards",
+  "Pokemon Mega Evolution Pokemon TCG",
+  "Pokemon trading card collection box"
+ ]
+ search_host="www.bing.com"
+ for term_index,term in enumerate(search_terms,1):
+  query=f"site:{domain} {term}"
+  try:
+   if progress_callback: progress_callback(0.24+0.08*term_index/len(search_terms),f"{retailer}: searching public product results {term_index}/{len(search_terms)}")
+   rss_url="https://www.bing.com/search?format=rss&count=50&q="+requests.utils.quote(query)
+   sr=requests.get(rss_url,headers={**HEADERS,"Accept":"application/rss+xml, application/xml;q=0.9, */*;q=0.8"},timeout=12)
+   sr.raise_for_status()
+   root=ET.fromstring(sr.content)
+   for item in root.findall(".//item"):
+    result_title=(item.findtext("title") or "").strip()
+    result_link=(item.findtext("link") or "").strip()
+    result_desc=(item.findtext("description") or "").strip()
+    candidates_from_result=[]
+    if result_link: candidates_from_result.append(result_link)
+    # Some RSS entries expose retailer links in description anchors.
+    for raw in re.findall(r'href=["\\']([^"\\']+)["\\']',result_desc,re.I):
+     candidates_from_result.append(raw)
+    for raw in candidates_from_result:
+     raw=unquote(raw.replace("&amp;","&"))
+     if "bing.com/ck/a" in raw:
+      try:
+       from urllib.parse import urlparse,parse_qs
+       params=parse_qs(urlparse(raw).query)
+       encoded=params.get("u",[""])[0]
+       if encoded.startswith("a1"):
+        import base64
+        raw=base64.urlsafe_b64decode(encoded[2:]+"===" ).decode("utf-8","ignore")
+      except Exception: pass
+     raw=raw.split("&amp;")[0]
+     add_candidate(raw,result_title)
+   log.info("%s: Bing RSS query %s found %s total candidate URLs",retailer,term_index,len(found))
+  except (requests.RequestException,ET.ParseError) as e:
+   log.warning("%s: free Bing RSS discovery query failed (%s): %s",retailer,term_index,str(e)[:180])
  # Public TrackaLacker listings add candidate retailer URLs; retailer pages still decide final stock.
  log.info("%s: using third-party tracker product names in retailer search",retailer)
  # Optional free-reference BujusJuJus feed (set BUJUS_API_KEY in Railway to enable).
