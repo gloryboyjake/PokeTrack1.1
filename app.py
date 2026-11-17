@@ -9,6 +9,8 @@ app=Flask(__name__)
 logging.basicConfig(level=os.getenv("LOG_LEVEL","INFO"))
 log=logging.getLogger("poketrack")
 SCAN_LOCK=threading.Lock()
+DB_INIT_LOCK=threading.Lock()
+DB_READY=False
 DB_PATH=os.getenv("DB_PATH","/data/poketrack.db")
 ZIP=os.getenv("START_ZIP","22601")
 RADIUS=int(os.getenv("RADIUS_MILES","80"))
@@ -36,12 +38,30 @@ CREATE TABLE IF NOT EXISTS store_inventory_checks(store_id INTEGER PRIMARY KEY,s
 """
 def now(): return datetime.now(timezone.utc).isoformat()
 def conn():
+ global DB_READY
  os.makedirs(os.path.dirname(DB_PATH) or ".",exist_ok=True)
- c=sqlite3.connect(DB_PATH,timeout=60); c.row_factory=sqlite3.Row; c.execute("PRAGMA busy_timeout=60000"); c.executescript(SCHEMA)
- cols={r[1] for r in c.execute("PRAGMA table_info(products)")}
- for name,decl in [("seller_verified","INTEGER NOT NULL DEFAULT 0"),("seller_name","TEXT"),("popularity_score","INTEGER NOT NULL DEFAULT 0"),("popularity_reason","TEXT")]:
-  if name not in cols: c.execute(f"ALTER TABLE products ADD COLUMN {name} {decl}")
- c.commit(); return c
+ c=sqlite3.connect(DB_PATH,timeout=60,check_same_thread=True)
+ c.row_factory=sqlite3.Row
+ c.execute("PRAGMA busy_timeout=60000")
+ # Initialize persistent schema once; repeating DDL on every request caused
+ # avoidable write contention while dashboard reads and scan writes overlapped.
+ if not DB_READY:
+  with DB_INIT_LOCK:
+   if not DB_READY:
+    mode=c.execute("PRAGMA journal_mode=WAL").fetchone()[0]
+    if str(mode).lower()!="wal":
+     raise RuntimeError("SQLite WAL mode could not be enabled; got "+str(mode))
+    c.execute("PRAGMA synchronous=NORMAL")
+    c.executescript(SCHEMA)
+    cols={r[1] for r in c.execute("PRAGMA table_info(products)")}
+    for name,decl in [("seller_verified","INTEGER NOT NULL DEFAULT 0"),("seller_name","TEXT"),("popularity_score","INTEGER NOT NULL DEFAULT 0"),("popularity_reason","TEXT")]:
+     if name not in cols: c.execute(f"ALTER TABLE products ADD COLUMN {name} {decl}")
+    c.commit()
+    DB_READY=True
+ else:
+  c.execute("PRAGMA synchronous=NORMAL")
+ return c
+
 def haversine(a,b,c,d):
  r=3958.7613; p1,p2=math.radians(a),math.radians(c)
  return 2*r*math.asin(math.sqrt(math.sin((p2-p1)/2)**2+math.cos(p1)*math.cos(p2)*math.sin(math.radians(d-b)/2)**2))
