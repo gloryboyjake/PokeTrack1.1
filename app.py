@@ -12,6 +12,7 @@ log=logging.getLogger("poketrack")
 SCAN_LOCK=threading.Lock()
 DB_INIT_LOCK=threading.Lock()
 DB_READY=False
+GOOGLE_RATE_LIMITED=False
 DB_PATH=os.getenv("DB_PATH","/data/poketrack.db")
 ZIP=os.getenv("START_ZIP","22601")
 RADIUS=int(os.getenv("RADIUS_MILES","80"))
@@ -115,6 +116,10 @@ def clean_url(u):
  u=unquote(u or "")
  if u.startswith("/url?"): u=parse_qs(urlparse(u).query).get("q",[""])[0]
  p=urlparse(u)
+ if p.hostname and "duckduckgo.com" in p.hostname:
+  params=parse_qs(p.query)
+  u=(params.get("uddg") or params.get("url") or [""])[0]
+  p=urlparse(u)
  if p.hostname and ("google." in p.hostname or p.hostname.endswith(".google.com")):
   params=parse_qs(p.query)
   u=(params.get("q") or params.get("url") or params.get("adurl") or [""])[0]
@@ -196,44 +201,65 @@ def search_products(retailer):
     except Exception: pass
   except requests.RequestException as e:
    log.warning("Direct catalog unavailable for %s: %s; using public search fallback",retailer,e)
- # Free Google Shopping plus normal web results. Search results only discover
- # candidates; seller identity is checked on each retailer product page below.
+ global GOOGLE_RATE_LIMITED
+ # DuckDuckGo's HTML results are the first no-key fallback. Decode its
+ # outbound redirect and keep only product URLs on the retailer's own domain.
+ search_found={}
+ ddg_query=f'site:{domain} Pokemon trading cards OR Pokemon TCG OR Pokemon booster OR Elite Trainer Box'
+ try:
+  r=requests.get("https://html.duckduckgo.com/html/",params={"q":ddg_query},headers={**HEADERS,"Referer":"https://duckduckgo.com/"},timeout=20)
+  r.raise_for_status()
+  if re.search(r"captcha|anomaly|bots use duckduckgo",r.text[:30000],re.I):
+   raise requests.RequestException("DuckDuckGo presented an anti-bot page")
+  soup=BeautifulSoup(r.text,"html.parser")
+  anchors=soup.select("a.result__a[href],a[data-testid='result-title-a'][href]")
+  if not anchors: anchors=soup.select("a[href]")
+  for a in anchors:
+   u=clean_url(a.get("href",""))
+   title=a.get_text(" ",strip=True)
+   if u and retailer_domain_match(u,domain) and title and is_pokemon_tcg_title(title):
+    search_found.setdefault(u,title[:250])
+ except requests.RequestException as e:
+  log.warning("DuckDuckGo search unavailable for %s: %s",retailer,e)
+ # Google Shopping/web is retained as a secondary source, but stop querying it
+ # after the first HTTP 429 so the whole scan does not hammer a blocked origin.
  searches=[
   ("shopping",f"Pokemon cards {retailer}"),
   ("shopping",f"Pokemon trading cards {retailer}"),
   ("web",f"site:{domain} Pokemon TCG booster ETB tin"),
   ("web",f"site:{domain} Pokemon 30th anniversary OR Ascended Heroes OR Mega Evolution OR Chaos Rising OR Pitch Black OR Prismatic Evolutions OR Delta Reign")
  ]
- search_found={}
- google_blocked=False
- for mode,q in searches:
-  try:
-   params={"tbm":"shop","num":40,"q":q} if mode=="shopping" else {"num":40,"q":q}
-   r=requests.get("https://www.google.com/search",params=params,headers=HEADERS,timeout=20)
-   if r.status_code==429: raise requests.HTTPError("Google rate limited this server (HTTP 429)")
-   r.raise_for_status()
-   html=r.text
-   if re.search(r"unusual traffic|not a robot|captcha|consent\\.google\\.com",html[:30000],re.I):
-    google_blocked=True
-    raise requests.HTTPError("Google presented an automated-traffic or consent page")
-   soup=BeautifulSoup(html,"html.parser")
-   for a in soup.select("a[href]"):
-    raw=a.get("href","")
-    u=clean_url(raw)
-    if not u or not retailer_domain_match(u,domain): continue
-    title=a.get_text(" ",strip=True)
-    parent=a.parent
-    context=parent.get_text(" ",strip=True) if parent else ""
-    if len(context)<40 and parent and parent.parent: context=parent.parent.get_text(" ",strip=True)
-    combined=(title+" "+context).strip()
-    if not is_pokemon_tcg_title(combined): continue
-    if not title or not is_pokemon_tcg_title(title):
-     match=re.search(r"(?:Pok[eé]mon|Pokemon)[^.]{5,150}",combined,re.I)
-     title=match.group(0).strip() if match else combined[:250]
-    search_found.setdefault(u,title[:250])
-  except requests.RequestException as e:
-   log.warning("Google %s search unavailable for %s: %s",mode,retailer,e)
-   if google_blocked: break
+ if len(search_found)<10 and not GOOGLE_RATE_LIMITED:
+  for mode,q in searches:
+   try:
+    params={"tbm":"shop","num":40,"q":q} if mode=="shopping" else {"num":40,"q":q}
+    r=requests.get("https://www.google.com/search",params=params,headers=HEADERS,timeout=20)
+    if r.status_code==429:
+     GOOGLE_RATE_LIMITED=True
+     raise requests.HTTPError("Google rate limited this server (HTTP 429)")
+    r.raise_for_status()
+    html=r.text
+    if re.search(r"unusual traffic|not a robot|captcha|consent\\.google\\.com",html[:30000],re.I):
+     GOOGLE_RATE_LIMITED=True
+     raise requests.HTTPError("Google presented an automated-traffic or consent page")
+    soup=BeautifulSoup(html,"html.parser")
+    for a in soup.select("a[href]"):
+     u=clean_url(a.get("href",""))
+     if not u or not retailer_domain_match(u,domain): continue
+     title=a.get_text(" ",strip=True)
+     parent=a.parent
+     context=parent.get_text(" ",strip=True) if parent else ""
+     if len(context)<40 and parent and parent.parent: context=parent.parent.get_text(" ",strip=True)
+     combined=(title+" "+context).strip()
+     if not is_pokemon_tcg_title(combined): continue
+     if not title or not is_pokemon_tcg_title(title):
+      match=re.search(r"(?:Pok[eé]mon|Pokemon)[^.]{5,150}",combined,re.I)
+      title=match.group(0).strip() if match else combined[:250]
+     search_found.setdefault(u,title[:250])
+   except requests.RequestException as e:
+    log.warning("Google %s search unavailable for %s: %s",mode,retailer,e)
+    if GOOGLE_RATE_LIMITED: break
+ # Bing RSS is the final free fallback. It is used even when Google is blocked.
  if len(search_found)<10:
   try:
    q=f'site:{domain} Pokemon trading cards OR Pokemon TCG OR Pokemon booster OR Elite Trainer Box'
@@ -241,7 +267,8 @@ def search_products(retailer):
    r.raise_for_status()
    root=ET.fromstring(r.content)
    for item in root.findall(".//item"):
-    u=clean_url(item.findtext("link",""))
+    raw=item.findtext("link","")
+    u=clean_url(raw)
     title=item.findtext("title","")
     if u and retailer_domain_match(u,domain) and title and is_pokemon_tcg_title(title):
      search_found.setdefault(u,title[:250])
