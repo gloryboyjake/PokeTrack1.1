@@ -134,15 +134,15 @@ def direct_catalog_url(retailer):
  urls={
   "Target":"https://www.target.com/s?searchTerm=pokemon%20trading%20cards",
   "Walmart":"https://www.walmart.com/search?q=pokemon%20trading%20cards",
-  "Walgreens":"https://www.walgreens.com/q/all-pokemon-cards",
+  "Walgreens":"https://www.walgreens.com/search/results.jsp?Ntt=pokemon%20trading%20cards",
   "Best Buy":"https://www.bestbuy.com/site/searchpage.jsp?st=pokemon+trading+cards",
-  "Barnes & Noble":"https://www.barnesandnoble.com/s/pokemon%20trading%20cards",
+  "Barnes & Noble":"https://www.barnesandnoble.com/s/pokemon",
   "Costco":"https://www.costco.com/CatalogSearch?keyword=pokemon",
   "Sam's Club":"https://www.samsclub.com/s/pokemon",
   "Dollar General":"https://www.dollargeneral.com/search?query=pokemon",
   "Hobby Lobby":"https://www.hobbylobby.com/search/?q=pokemon",
   "Books-A-Million":"https://www.booksamillion.com/search?query=pokemon",
-  "Gabe's":"https://www.gabesstores.com/search?q=pokemon",
+  "Gabe's":"https://www.gabesstores.com/",
   "Amazon":"https://www.amazon.com/s?k=pokemon+trading+cards"
  }
  return urls.get(retailer)
