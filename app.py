@@ -193,7 +193,7 @@ let mode='stores',stores=[],products=[],history=[];function tab(m,b){mode=m;docu
 async function load(){try{let [a,b,c,d]=await Promise.all(['/api/stores','/api/products','/api/history','/api/summary'].map(x=>fetch(x).then(r=>r.json())));stores=a.stores||[];products=b.products||[];history=c.runs||[];document.getElementById('stores').textContent=stores.length;document.getElementById('products').textContent=products.length;document.getElementById('stock').textContent=products.filter(x=>x.availability==='in_stock').length;document.getElementById('last').textContent=d.last_scan?new Date(d.last_scan).toLocaleString():'—';let opts=[...new Set([...stores,...products].map(x=>x.retailer))].sort();document.getElementById('retailer').innerHTML='<option value="">All retailers</option>'+opts.map(x=>'<option>'+esc(x)+'</option>').join('');draw()}catch(e){document.getElementById('list').textContent='Could not load dashboard data: '+e}}
 function esc(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 function draw(){let q=document.getElementById('q').value.toLowerCase(),r=document.getElementById('retailer').value,a=document.getElementById('availability').value;let rows=mode==='stores'?stores:mode==='products'?products:history;rows=rows.filter(x=>(!r||x.retailer===r)&&(!a||x.availability===a)&&JSON.stringify(x).toLowerCase().includes(q));document.getElementById('list').innerHTML=rows.length?rows.map(x=>mode==='stores'?'<div class="item"><div><b>'+esc(x.name)+'</b><div class="muted">'+esc(x.retailer)+' · '+esc(x.address||x.city||'Address not listed')+'</div><div class="muted">'+Number(x.distance).toFixed(1)+' miles from '+esc(x.zip||'22601')+' · <a href="'+esc(x.source_url)+'" target="_blank">Map/source</a></div></div><span class="pill">'+esc(x.source)+'</span></div>':mode==='products'?'<div class="item"><div><b><a href="'+esc(x.url)+'" target="_blank">'+esc(x.title)+'</a></b><div class="muted">'+esc(x.retailer)+' · '+esc(x.price||'Price not listed')+'</div></div><span class="pill">'+esc(x.availability)+'</span></div>':'<div class="item"><div><b>'+esc(x.kind)+' · '+esc(x.status)+'</b><div class="muted">'+esc(x.message)+'</div></div><span class="pill">'+esc(x.started_at)+'</span></div>').join(''):'<p class="muted">No matching records yet. Run a scan to populate this section.</p>'}
-async function scan(kind){let m=document.getElementById('msg');m.textContent='Scanning… this can take several minutes.';try{let r=await fetch('/api/scan?kind='+kind,{method:'POST'}),d=await r.json();m.textContent=d.message||d.error||'Scan finished';await load()}catch(e){m.textContent='Scan failed: '+e}}
+async function scan(kind){let m=document.getElementById('msg');m.textContent='Starting scan…';try{let r=await fetch('/api/scan?kind='+kind,{method:'POST'}),d=await r.json();m.textContent=d.message||d.error||'Scan started';if(!r.ok)return;let tries=0;let timer=setInterval(async()=>{tries++;await load();let running=history.some(x=>x.status==='running');if(!running||tries>=180){clearInterval(timer);m.textContent=running?'Scan is still running; you can keep using the dashboard.':'Scan finished. '+(history[0]?.message||'Results refreshed.')}},4000)}catch(e){m.textContent='Scan failed: '+e}}
 load();setInterval(load,60000);
 </script></body></html>"""
 @app.get("/")
@@ -218,7 +218,10 @@ def summary():
 def api_scan():
  kind=request.args.get("kind","all")
  if kind not in ("all","stores","products"):return jsonify(error="Invalid scan kind"),400
- result=run_scan(kind)
- if isinstance(result,tuple):return jsonify(result[0]),result[1]
- return jsonify(result)
+ if not SCAN_LOCK.acquire(blocking=False):
+  return jsonify({"status":"busy","message":"A scan is already running. Please wait for it to finish."}),409
+ SCAN_LOCK.release()
+ worker=threading.Thread(target=run_scan,args=(kind,),daemon=True)
+ worker.start()
+ return jsonify({"status":"started","message":"Scan started in the background. The dashboard will remain available while it runs."}),202
 if __name__=="__main__": app.run(host="0.0.0.0",port=int(os.getenv("PORT","8080")))
