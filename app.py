@@ -904,3 +904,25 @@ def api_scan():
  worker.start()
  return jsonify({"status":"started","message":"Scan started in the background. The dashboard will remain available while it runs."}),202
 if __name__=="__main__": app.run(host="0.0.0.0",port=int(os.getenv("PORT","8080")))
+
+# Automatic retailer product-listing refresh. Keep this in the existing web process:
+# Railway's service-level cron mode would take the dashboard offline between runs.
+AUTO_SCAN_INTERVAL_MINUTES = max(10, min(15, int(os.getenv("AUTO_SCAN_INTERVAL_MINUTES", "15"))))
+
+def recurring_product_scan_loop():
+ # Wait one full interval after startup, then wait the same interval after each
+ # completed run. Running the scan synchronously in this daemon thread prevents
+ # overlapping scheduled runs; manual scans are protected by SCAN_LOCK as well.
+ while True:
+  time.sleep(AUTO_SCAN_INTERVAL_MINUTES * 60)
+  try:
+   log.info("Starting scheduled automatic product-listing scan (every %s minutes)", AUTO_SCAN_INTERVAL_MINUTES)
+   result = run_scan("products")
+   log.info("Scheduled product-listing scan finished: %s", result)
+  except Exception:
+   log.exception("Scheduled automatic product-listing scan failed")
+
+# Procfile uses one Gunicorn worker, so this starts one scheduler alongside Flask.
+# It runs independently of dashboard visits and restarts automatically with Railway.
+if os.getenv("DISABLE_AUTO_SCAN", "0").strip().lower() not in ("1", "true", "yes"):
+ threading.Thread(target=recurring_product_scan_loop, name="poketrack-auto-scan", daemon=True).start()
