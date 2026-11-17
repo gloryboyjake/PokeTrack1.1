@@ -33,7 +33,13 @@ CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);
 def now(): return datetime.now(timezone.utc).isoformat()
 def conn():
  os.makedirs(os.path.dirname(DB_PATH) or ".",exist_ok=True)
- c=sqlite3.connect(DB_PATH,timeout=30); c.row_factory=sqlite3.Row; c.executescript(SCHEMA); return c
+ c=sqlite3.connect(DB_PATH,timeout=30); c.row_factory=sqlite3.Row; c.executescript(SCHEMA)
+ cols={row["name"] for row in c.execute("PRAGMA table_info(scan_runs)")}
+ if "kind" not in cols: c.execute("ALTER TABLE scan_runs ADD COLUMN kind TEXT NOT NULL DEFAULT 'all'")
+ if "finished_at" not in cols: c.execute("ALTER TABLE scan_runs ADD COLUMN finished_at TEXT")
+ if "found" not in cols: c.execute("ALTER TABLE scan_runs ADD COLUMN found INTEGER DEFAULT 0")
+ if "message" not in cols: c.execute("ALTER TABLE scan_runs ADD COLUMN message TEXT")
+ c.commit(); return c
 def haversine(a,b,c,d):
  r=3958.7613; p1,p2=math.radians(a),math.radians(c)
  return 2*r*math.asin(math.sqrt(math.sin((p2-p1)/2)**2+math.cos(p1)*math.cos(p2)*math.sin(math.radians(d-b)/2)**2))
