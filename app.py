@@ -53,7 +53,7 @@ CREATE TABLE IF NOT EXISTS stores(id INTEGER PRIMARY KEY, retailer TEXT NOT NULL
  source TEXT NOT NULL, source_url TEXT, checked_at TEXT NOT NULL, UNIQUE(retailer,name,lat,lon));
 CREATE TABLE IF NOT EXISTS products(id INTEGER PRIMARY KEY, retailer TEXT NOT NULL, title TEXT NOT NULL,
  url TEXT NOT NULL UNIQUE, price TEXT, availability TEXT NOT NULL DEFAULT 'unknown',
- source TEXT NOT NULL, first_seen TEXT NOT NULL, last_seen TEXT NOT NULL,
+ source TEXT NOT NULL, first_seen TEXT NOT NULL, last_seen TEXT NOT NULL,last_checked TEXT NOT NULL DEFAULT '',
  seller_verified INTEGER NOT NULL DEFAULT 0, seller_name TEXT, popularity_score INTEGER NOT NULL DEFAULT 0, popularity_reason TEXT);
 CREATE TABLE IF NOT EXISTS poketrack_scan_runs(id INTEGER PRIMARY KEY, kind TEXT NOT NULL, started_at TEXT NOT NULL,
  finished_at TEXT, status TEXT NOT NULL, found INTEGER DEFAULT 0, message TEXT);
@@ -79,7 +79,7 @@ def conn():
     c.execute("PRAGMA synchronous=NORMAL")
     c.executescript(SCHEMA)
     cols={r[1] for r in c.execute("PRAGMA table_info(products)")}
-    for name,decl in [("seller_verified","INTEGER NOT NULL DEFAULT 0"),("seller_name","TEXT"),("popularity_score","INTEGER NOT NULL DEFAULT 0"),("popularity_reason","TEXT"),("discovery_sources","TEXT"),("stock_checked_at","TEXT")]:
+    for name,decl in [("last_checked","TEXT NOT NULL DEFAULT ''"),("seller_verified","INTEGER NOT NULL DEFAULT 0"),("seller_name","TEXT"),("popularity_score","INTEGER NOT NULL DEFAULT 0"),("popularity_reason","TEXT"),("discovery_sources","TEXT"),("stock_checked_at","TEXT")]:
      if name not in cols: c.execute(f"ALTER TABLE products ADD COLUMN {name} {decl}")
     c.commit()
     DB_READY=True
