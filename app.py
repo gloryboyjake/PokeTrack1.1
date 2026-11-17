@@ -22,6 +22,13 @@ ZIP=os.getenv("START_ZIP","22601")
 RADIUS=int(os.getenv("RADIUS_MILES","80"))
 UA=os.getenv("USER_AGENT","Mozilla/5.0 (compatible; PokeTrackRadar/1.0)")
 HEADERS={"User-Agent":UA,"Accept-Language":"en-US,en;q=0.9"}
+def search_get(url, **kwargs):
+ if browser_requests is not None:
+  headers={k:v for k,v in {**HEADERS,**kwargs.pop("headers",{})}.items() if k.lower()!="user-agent"}
+  headers.setdefault("Referer","https://www.google.com/")
+  return browser_requests.get(url,headers=headers,impersonate="chrome151",**kwargs)
+ return requests.get(url,**kwargs)
+
 def retailer_get(url, **kwargs):
  host=(urlparse(url).hostname or "").lower()
  protected=("target.com","walmart.com","barnesandnoble.com","bestbuy.com","samsclub.com","costco.com")
@@ -382,7 +389,7 @@ def search_products(retailer):
  # rate-limited by Google. Only direct retailer-domain product URLs are kept.
  try:
   q=f'site:{domain} Pokemon trading cards OR Pokemon TCG OR Pokemon booster OR Elite Trainer Box'
-  r=requests.get("https://html.duckduckgo.com/html/",params={"q":q},headers={**HEADERS,"Referer":"https://duckduckgo.com/"},timeout=20)
+  r=search_get("https://html.duckduckgo.com/html/",params={"q":q},headers={**HEADERS,"Referer":"https://duckduckgo.com/"},timeout=20)
   r.raise_for_status()
   if re.search(r"captcha|anomaly|bots use duckduckgo",r.text[:30000],re.I):
    raise requests.RequestException("DuckDuckGo presented an anti-bot page")
@@ -414,7 +421,7 @@ def search_products(retailer):
   for mode,q in searches:
    try:
     params={"tbm":"shop","num":40,"q":q} if mode=="shopping" else {"num":40,"q":q}
-    r=requests.get("https://www.google.com/search",params=params,headers=HEADERS,timeout=20)
+    r=search_get("https://www.google.com/search",params=params,headers=HEADERS,timeout=20)
     if r.status_code==429:
      GOOGLE_RATE_LIMITED=True
      raise requests.HTTPError("Google rate limited this server (HTTP 429)")
@@ -443,7 +450,7 @@ def search_products(retailer):
  if len(search_found)<10:
   try:
    q=f'site:{domain} Pokemon trading cards OR Pokemon TCG OR Pokemon booster OR Elite Trainer Box'
-   r=requests.get("https://www.bing.com/search",params={"q":q,"format":"rss"},headers=HEADERS,timeout=20)
+   r=search_get("https://www.bing.com/search",params={"q":q,"format":"rss"},headers=HEADERS,timeout=20)
    r.raise_for_status()
    root=ET.fromstring(r.content)
    for item in root.findall(".//item"):
@@ -471,7 +478,7 @@ def search_products(retailer):
  if len(search_found)<10:
   try:
    q=f'site:{domain} Pokemon trading cards OR Pokemon TCG OR Pokemon booster OR Elite Trainer Box'
-   r=requests.get("https://search.yahoo.com/search",params={"p":q},headers=HEADERS,timeout=20)
+   r=search_get("https://search.yahoo.com/search",params={"p":q},headers=HEADERS,timeout=20)
    r.raise_for_status()
    soup=BeautifulSoup(r.text,"html.parser")
    for a in soup.select("a[href]"):
