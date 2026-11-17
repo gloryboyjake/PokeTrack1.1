@@ -91,7 +91,7 @@ def search_products(retailer):
   log.warning("Google unavailable for %s: %s; trying Bing RSS",retailer,google_error)
   r=requests.get("https://www.bing.com/search",params={"q":q,"format":"rss"},headers=HEADERS,timeout=20)
   r.raise_for_status()
-  soup=BeautifulSoup(r.text,"xml")
+  soup=BeautifulSoup(r.text,"html.parser")
   for item in soup.select("item"):
    u=clean_url(item.link.get_text(strip=True) if item.link else "")
    title=item.title.get_text(" ",strip=True) if item.title else ""
