@@ -181,19 +181,27 @@ def search_products(retailer):
    r.raise_for_status()
    soup=BeautifulSoup(r.text,"html.parser")
    for a in soup.select("a[href]"):
-    add_candidate(requests.compat.urljoin(catalog,a.get("href","")),a.get_text(" ",strip=True))
-   for node in soup.select('script[type="application/ld+json"]'):
+    title=a.get_text(" ",strip=True)
+    if not title:
+     image_node=a.find("img")
+     title=(image_node.get("alt") if image_node else None) or a.get("aria-label") or a.get("title") or ""
+    if not title and a.parent: title=a.parent.get_text(" ",strip=True)
+    add_candidate(requests.compat.urljoin(catalog,a.get("href","")),title)
+   def walk_catalog_json(obj):
+    if isinstance(obj,dict):
+     name=obj.get("name") or obj.get("title") or obj.get("productName")
+     url=obj.get("url") or obj.get("productUrl") or obj.get("productURL") or obj.get("canonicalUrl") or obj.get("href")
+     if isinstance(name,str) and isinstance(url,str):
+      add_candidate(requests.compat.urljoin(catalog,url),name)
+     for value in obj.values():
+      if isinstance(value,(dict,list)): walk_catalog_json(value)
+    elif isinstance(obj,list):
+     for value in obj:
+      if isinstance(value,(dict,list)): walk_catalog_json(value)
+   for node in soup.select('script[type="application/ld+json"],script#__NEXT_DATA__,script[type="application/json"]'):
     try:
      data=json.loads(node.string or node.get_text())
-     stack=data if isinstance(data,list) else [data]
-     while stack:
-      obj=stack.pop()
-      if isinstance(obj,dict):
-       if isinstance(obj.get("@graph"),list): stack.extend(obj["@graph"])
-       name=obj.get("name"); url=obj.get("url")
-       if name and url: add_candidate(requests.compat.urljoin(catalog,url),str(name))
-       stack.extend(v for v in obj.values() if isinstance(v,(dict,list)))
-      elif isinstance(obj,list): stack.extend(obj)
+     walk_catalog_json(data)
     except Exception: pass
   except requests.RequestException as e:
    log.warning("Direct catalog unavailable for %s: %s; using public search fallback",retailer,e)
