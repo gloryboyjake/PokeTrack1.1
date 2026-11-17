@@ -405,15 +405,17 @@ def search_products(retailer):
    if not is_pokemon_tcg_title(title): continue
    verified,seller=verify_retailer_seller(retailer,verification_text)
    if not verified: continue
+   stock=online_stock_status(page_text,embedded)
    score,reason=popularity_for(title,verification_text)
    t=now()
-   c.execute("""INSERT INTO products(retailer,title,url,price,availability,source,first_seen,last_seen,seller_verified,seller_name,popularity_score,popularity_reason)
-    VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(url) DO UPDATE SET title=excluded.title,
+   c.execute("""INSERT INTO products(retailer,title,url,price,availability,source,first_seen,last_seen,seller_verified,seller_name,popularity_score,popularity_reason,discovery_sources,stock_checked_at)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(url) DO UPDATE SET title=excluded.title,
     price=COALESCE(excluded.price,products.price),seller_verified=1,seller_name=excluded.seller_name,
     popularity_score=excluded.popularity_score,popularity_reason=excluded.popularity_reason,
-    availability='unknown',source='verified retailer product page',last_seen=excluded.last_seen""",
-    (retailer,title,u,price,"unknown","verified retailer product page",t,t,1,seller,score,reason))
-   products.append({"retailer":retailer,"title":title,"url":u,"price":price,"availability":"unknown","seller":seller,"popularity_score":score,"popularity_reason":reason})
+    availability=excluded.availability,source=excluded.source,last_seen=excluded.last_seen,
+    discovery_sources=excluded.discovery_sources,stock_checked_at=excluded.stock_checked_at""",
+    (retailer,title,u,price,stock,"retailer product page",t,t,1,seller,score,reason,"Direct retailer page + Google/DDG/Bing/Yahoo/TrackaLacker/Bujus (when enabled)",t))
+   products.append({"retailer":retailer,"title":title,"url":u,"price":price,"availability":stock,"seller":seller,"popularity_score":score,"popularity_reason":reason})
   except requests.RequestException as e:
    log.warning("Retailer product page failed for %s (%s): %s",retailer,u,e)
  c.commit(); c.close()
