@@ -26,7 +26,8 @@ def retailer_get(url, **kwargs):
  host=(urlparse(url).hostname or "").lower()
  protected=("target.com","walmart.com","barnesandnoble.com","bestbuy.com","samsclub.com","costco.com")
  if browser_requests is not None and any(host==d or host.endswith("."+d) for d in protected):
-  headers={**HEADERS,**kwargs.pop("headers",{})}
+  headers={k:v for k,v in {**HEADERS,**kwargs.pop("headers",{})}.items() if k.lower()!="user-agent"}
+  headers.setdefault("Referer","https://www.google.com/")
   try:
    return browser_requests.get(url,headers=headers,impersonate="chrome151",**kwargs)
   except Exception as e:
