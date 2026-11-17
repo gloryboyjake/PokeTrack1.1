@@ -90,14 +90,12 @@ def browser_get(url, timeout=25, store=None):
   status=response.status if response else 200
   final_url=page.url
   browser.close()
- class BrowserResponse:
-  ok=status<400
-  status_code=status
-  text=html
-  url=final_url
-  def raise_for_status(self):
-   if status>=400: raise requests.HTTPError(f"HTTP {status} for {final_url}")
- return BrowserResponse()
+  from types import SimpleNamespace
+ result=SimpleNamespace(ok=status<400,status_code=status,text=html,url=final_url)
+ def raise_for_status():
+  if status>=400: raise requests.HTTPError(f"HTTP {status} for {final_url}")
+ result.raise_for_status=raise_for_status
+ return result
 
 RETAILERS={
  "Target":["target.com"],"Walmart":["walmart.com"],"Best Buy":["bestbuy.com"],
