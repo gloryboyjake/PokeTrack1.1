@@ -196,6 +196,7 @@ def restockr_product_terms():
  if RESTOCKR_TERMS_CACHE and time.time()-RESTOCKR_TERMS_CACHE_AT<21600:
   return RESTOCKR_TERMS_CACHE
  terms=[]
+ # Rippr Restockr's daily-updated catalog provides additional sealed-product names.
  try:
   r=requests.get("https://rippr.app/restockr",headers=HEADERS,timeout=20); r.raise_for_status()
   text=BeautifulSoup(r.text,"html.parser").get_text(" ",strip=True)
@@ -206,9 +207,24 @@ def restockr_product_terms():
     terms.append(title[:120])
  except requests.RequestException as e:
   log.warning("Rippr Restockr catalog unavailable: %s",e)
- RESTOCKR_TERMS_CACHE=terms[:12]
+ # Card Restock Tracker publishes product-level in-stock AND sold-out pages for independent shops.
+ try:
+  r=requests.get("https://cardrestocktracker.com/",headers=HEADERS,timeout=20); r.raise_for_status()
+  soup=BeautifulSoup(r.text,"html.parser")
+  for a in soup.select('a[href^="/us/"]'):
+   href=a.get("href","")
+   if "/store/" in href or href.endswith("/retailers"): continue
+   label=re.sub(r"\s+"," ",a.get_text(" ",strip=True)).strip()
+   label=re.split(r"\s+(?:in stock at|sold out)\b",label,flags=re.I)[0].strip()
+   if not label or not re.search(r"booster|elite trainer|etb|collection|blister|tin|deck|card pack",label,re.I): continue
+   title=label if re.search(r"pok[eé]mon",label,re.I) else "Pokemon TCG "+label
+   if is_pokemon_tcg_title(title) and title.lower() not in [x.lower() for x in terms]:
+    terms.append(title[:120])
+ except requests.RequestException as e:
+  log.warning("Card Restock Tracker catalog unavailable: %s",e)
+ RESTOCKR_TERMS_CACHE=terms[:30]
  RESTOCKR_TERMS_CACHE_AT=time.time()
- log.info("Rippr Restockr supplied %s trending Pokémon TCG product names",len(RESTOCKR_TERMS_CACHE))
+ log.info("Third-party restock trackers supplied %s Pokémon TCG product names",len(RESTOCKR_TERMS_CACHE))
  return RESTOCKR_TERMS_CACHE
 
 TRACKER_CANDIDATES_CACHE={}
