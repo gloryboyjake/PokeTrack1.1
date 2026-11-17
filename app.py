@@ -692,6 +692,11 @@ def scan_store_inventory(progress_callback=None):
  checked=0; confirmed=0; unknown=0; errors=0; unsupported=0
  target_stores=[x for x in stores if x["retailer"]=="Target"]
  work_total=max(1,len(stores)+len(target_stores)*len(products)); work_done=0
+ # Target begins rate-limiting this shared server after repeated product-page
+ # requests. Once it returns 403/429 or Chromium crashes, stop requesting more
+ # Target pages for this run instead of spending many minutes repeating failures.
+ target_access_blocked=False
+ target_access_block_reason=""
  for store in stores:
   if store["retailer"]!="Target":
    unsupported+=1
@@ -702,6 +707,10 @@ def scan_store_inventory(progress_callback=None):
    continue
   branch_rows=[]; failures=0
   for product in products:
+   if target_access_blocked:
+    work_done+=1
+    if progress_callback: progress_callback(work_done,work_total,f"Target checks paused: {target_access_block_reason}")
+    continue
    try:
     page=browser_get(product["url"],timeout=25,store=store)
     if not page.ok: raise requests.HTTPError(f"Retailer page HTTP {page.status_code}")
@@ -721,7 +730,11 @@ def scan_store_inventory(progress_callback=None):
     branch_rows.append((product["url"],product["title"],status,quantity,evidence))
    except Exception as e:
     failures+=1
-    log.warning("Target browser check failed for %s at %s: %s",product.get("title"),store.get("name"),str(e)[:180])
+    error_text=str(e)
+    log.warning("Target browser check failed for %s at %s: %s",product.get("title"),store.get("name"),error_text[:180])
+    if "HTTP 403" in error_text or "HTTP 429" in error_text or "Target crashed" in error_text:
+     target_access_blocked=True
+     target_access_block_reason=("Target returned an access/rate-limit response" if ("HTTP 403" in error_text or "HTTP 429" in error_text) else "Target's browser renderer crashed")
    finally:
     work_done+=1
     if progress_callback: progress_callback(work_done,work_total,f"Checking {store.get('name','Target branch')} — {product.get('title','product')}")
