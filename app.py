@@ -2,6 +2,7 @@ import os, re, json, math, time, sqlite3, logging, threading
 from datetime import datetime, timezone
 from urllib.parse import urlparse, urlunparse, parse_qs, unquote
 import requests
+import xml.etree.ElementTree as ET
 from bs4 import BeautifulSoup
 from flask import Flask, jsonify, request, render_template_string
 
@@ -152,61 +153,106 @@ def popularity_for(title, page_text):
   if term in t: score=max(score,pts); reason.append(term.title())
  if re.search(r"best.?sell|popular|top seller|customer favorite",body): score+=8; reason.append("retailer popularity")
  return min(score,100),(", ".join(reason) or "standard TCG listing")
+def retailer_domain_match(url,domain):
+ host=(urlparse(url).hostname or "").lower()
+ domain=(domain or "").lower()
+ return host==domain or host.endswith("."+domain)
 def search_products(retailer):
- # Read retailer-owned catalog pages directly and follow their product links.
+ # Discover candidates from the retailer's own catalog first, then use free
+ # public Google/Bing search results as a fallback when catalog pages are JS-only.
  catalog=direct_catalog_url(retailer)
  domain=RETAILERS[retailer][0]
- r=requests.get(catalog,headers=HEADERS,timeout=25)
- r.raise_for_status()
- soup=BeautifulSoup(r.text,"html.parser")
  found={}
- for a in soup.select("a[href]"):
-  u=clean_url(requests.compat.urljoin(catalog,a.get("href","")))
-  title=a.get_text(" ",strip=True)
-  if not u or not (urlparse(u).hostname or "").lower().endswith(domain): continue
-  if not title or not is_pokemon_tcg_title(title): continue
-  found[u]=title[:250]
- # Some retailer catalogs expose product names in JSON-LD rather than anchor text.
- for node in soup.select('script[type="application/ld+json"]'):
+ def add_candidate(raw_url,title):
+  u=clean_url(raw_url)
+  title=(title or "").strip()
+  if not u or not retailer_domain_match(u,domain): return
+  if not title or not is_pokemon_tcg_title(title): return
+  found.setdefault(u,title[:250])
+ if catalog:
   try:
-   data=json.loads(node.string or node.get_text())
-   stack=data if isinstance(data,list) else [data]
-   while stack:
-    obj=stack.pop()
-    if isinstance(obj,dict):
-     if isinstance(obj.get("@graph"),list): stack.extend(obj["@graph"])
-     name=obj.get("name"); url=obj.get("url")
-     if name and url and is_pokemon_tcg_title(name):
-      u=clean_url(requests.compat.urljoin(catalog,url))
-      if u and (urlparse(u).hostname or "").lower().endswith(domain): found[u]=str(name)[:250]
-     stack.extend(v for v in obj.values() if isinstance(v,(dict,list)))
-    elif isinstance(obj,list): stack.extend(obj)
-  except Exception: pass
+   r=requests.get(catalog,headers=HEADERS,timeout=25)
+   r.raise_for_status()
+   soup=BeautifulSoup(r.text,"html.parser")
+   for a in soup.select("a[href]"):
+    add_candidate(requests.compat.urljoin(catalog,a.get("href","")),a.get_text(" ",strip=True))
+   for node in soup.select('script[type="application/ld+json"]'):
+    try:
+     data=json.loads(node.string or node.get_text())
+     stack=data if isinstance(data,list) else [data]
+     while stack:
+      obj=stack.pop()
+      if isinstance(obj,dict):
+       if isinstance(obj.get("@graph"),list): stack.extend(obj["@graph"])
+       name=obj.get("name"); url=obj.get("url")
+       if name and url: add_candidate(requests.compat.urljoin(catalog,url),str(name))
+       stack.extend(v for v in obj.values() if isinstance(v,(dict,list)))
+      elif isinstance(obj,list): stack.extend(obj)
+    except Exception: pass
+  except requests.RequestException as e:
+   log.warning("Direct catalog unavailable for %s: %s; using public search fallback",retailer,e)
+ # Search-engine discovery is not an API and does not establish stock. Every
+ # candidate must still resolve to a real product page on the retailer domain.
+ q=f'site:{domain} Pokémon trading cards OR Pokémon TCG OR Pokémon booster OR Elite Trainer Box'
+ search_found={}
+ try:
+  r=requests.get("https://www.google.com/search",params={"q":q,"num":30},headers=HEADERS,timeout=20)
+  if r.status_code==429: raise requests.HTTPError("Google rate limited this server (HTTP 429)")
+  r.raise_for_status()
+  soup=BeautifulSoup(r.text,"html.parser")
+  for a in soup.select("a[href]"):
+   u=clean_url(a.get("href")); title=a.get_text(" ",strip=True)
+   if u and retailer_domain_match(u,domain) and title and is_pokemon_tcg_title(title):
+    search_found[u]=title[:250]
+ except requests.RequestException as e:
+  log.warning("Google search unavailable for %s: %s",retailer,e)
+ if len(search_found)<10:
+  try:
+   r=requests.get("https://www.bing.com/search",params={"q":q,"format":"rss"},headers=HEADERS,timeout=20)
+   r.raise_for_status()
+   root=ET.fromstring(r.content)
+   for item in root.findall(".//item"):
+    u=item.findtext("link","")
+    title=item.findtext("title","")
+    if u and retailer_domain_match(clean_url(u) or "",domain) and title and is_pokemon_tcg_title(title):
+     search_found[u]=title[:250]
+  except (requests.RequestException,ET.ParseError) as e:
+   log.warning("Bing RSS search unavailable for %s: %s",retailer,e)
+ for u,title in search_found.items():
+  found.setdefault(u,title)
  products=[]; c=conn()
- for u,title in list(found.items())[:35]:
-  price=None; stock="unknown"; source="retailer catalog page"; page_text=""
+ for u,title in list(found.items())[:50]:
   try:
    page=requests.get(u,headers=HEADERS,timeout=18)
-   if page.ok:
-    ps=BeautifulSoup(page.text,"html.parser")
-    page_text=ps.get_text(" ",strip=True)
-    og=ps.find("meta",property="og:title")
-    if og and og.get("content"): title=og["content"][:250]
-    for sel in ['meta[property="product:price:amount"]','meta[itemprop="price"]']:
-     n=ps.select_one(sel)
-     if n and n.get("content"): price=n["content"]; break
-    source="retailer product page"
+   if not page.ok: continue
+   ps=BeautifulSoup(page.text,"html.parser")
+   page_text=ps.get_text(" ",strip=True)
+   embedded=" ".join(x.get_text(" ",strip=True) for x in ps.select("script[type='application/ld+json'],script#__NEXT_DATA__,script[type='application/json']"))
+   verification_text=(page_text+" "+embedded)[:500000]
+   og=ps.find("meta",property="og:title")
+   if og and og.get("content"): title=og["content"][:250]
+   for sel in ['meta[property="product:price:amount"]','meta[itemprop="price"]']:
+    n=ps.select_one(sel)
+    if n and n.get("content"): price=n["content"]; break
+   else: price=None
+   if not is_pokemon_tcg_title(title): continue
+   verified,seller=verify_retailer_seller(retailer,verification_text)
+   if not verified: continue
+   score,reason=popularity_for(title,verification_text)
+   t=now()
+   c.execute("""INSERT INTO products(retailer,title,url,price,availability,source,first_seen,last_seen,seller_verified,seller_name,popularity_score,popularity_reason)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(url) DO UPDATE SET title=excluded.title,
+    price=COALESCE(excluded.price,products.price),seller_verified=1,seller_name=excluded.seller_name,
+    popularity_score=excluded.popularity_score,popularity_reason=excluded.popularity_reason,
+    availability='unknown',source='verified retailer product page',last_seen=excluded.last_seen""",
+    (retailer,title,u,price,"unknown","verified retailer product page",t,t,1,seller,score,reason))
+   products.append({"retailer":retailer,"title":title,"url":u,"price":price,"availability":"unknown","seller":seller,"popularity_score":score,"popularity_reason":reason})
   except requests.RequestException as e:
-   log.warning("Product page fetch failed for %s: %s",u,e)
-  if not is_pokemon_tcg_title(title): continue
-  verified,seller=verify_retailer_seller(retailer,page_text)
-  if not verified: continue
-  score,reason=popularity_for(title,page_text)
-  t=now(); c.execute("""INSERT INTO products(retailer,title,url,price,availability,source,first_seen,last_seen,seller_verified,seller_name,popularity_score,popularity_reason)
-   VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(url) DO UPDATE SET title=excluded.title,price=COALESCE(excluded.price,products.price),seller_verified=1,seller_name=excluded.seller_name,popularity_score=excluded.popularity_score,popularity_reason=excluded.popularity_reason,
-   availability=excluded.availability,source=excluded.source,last_seen=excluded.last_seen""",(retailer,title,u,price,stock,source,t,t,1,seller,score,reason))
-  products.append({"retailer":retailer,"title":title,"url":u,"price":price,"availability":stock,"seller":seller,"popularity_score":score,"popularity_reason":reason})
- c.commit(); c.close(); return products
+   log.warning("Retailer product page failed for %s (%s): %s",retailer,u,e)
+ c.commit(); c.close()
+ log.info("%s: %s retailer-owned Pokémon TCG product pages verified from %s candidates",retailer,len(products),len(found))
+ return products
+
 def branch_stock_status(blob):
  blob=(blob or "").lower()
  if re.search(r'out of stock|sold out|unavailable for pickup|not available at this store',blob): return "out_of_stock",None,"Out of stock"
