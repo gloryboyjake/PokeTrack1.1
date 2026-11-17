@@ -56,7 +56,7 @@ def conn():
     c.execute("PRAGMA synchronous=NORMAL")
     c.executescript(SCHEMA)
     cols={r[1] for r in c.execute("PRAGMA table_info(products)")}
-    for name,decl in [("seller_verified","INTEGER NOT NULL DEFAULT 0"),("seller_name","TEXT"),("popularity_score","INTEGER NOT NULL DEFAULT 0"),("popularity_reason","TEXT")]:
+    for name,decl in [("seller_verified","INTEGER NOT NULL DEFAULT 0"),("seller_name","TEXT"),("popularity_score","INTEGER NOT NULL DEFAULT 0"),("popularity_reason","TEXT"),("discovery_sources","TEXT"),("stock_checked_at","TEXT")]:
      if name not in cols: c.execute(f"ALTER TABLE products ADD COLUMN {name} {decl}")
     c.commit()
     DB_READY=True
@@ -289,6 +289,25 @@ def search_products(retailer):
  if sitemap_product_count:
   log.info("%s: %s Pokémon URLs found in retailer-owned sitemaps",retailer,sitemap_product_count)
  search_found={}
+ # Public TrackaLacker listings add candidate retailer URLs; retailer pages still decide final stock.
+ for u,title in tracker_candidates(retailer).items():
+  search_found.setdefault(u,title)
+ # Optional free-reference BujusJuJus feed (set BUJUS_API_KEY in Railway to enable).
+ api_key=os.getenv("BUJUS_API_KEY","").strip()
+ if api_key:
+  try:
+   payload={"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_recent_drops","arguments":{"sinceHours":72,"minConfidence":"high","kind":"restock","limit":200}}}
+   br=requests.post("https://bujusjuj.us/mcp",json=payload,headers={**HEADERS,"Authorization":"Bearer "+api_key},timeout=25)
+   br.raise_for_status()
+   outer=br.json()
+   inner=json.loads(outer.get("result",{}).get("content",[{}])[0].get("text","[]"))
+   for alert in inner if isinstance(inner,list) else inner.get("alerts",[]):
+    url=clean_url(alert.get("productUrl","")); name=str(alert.get("retailer","")).lower()
+    aliases={"target":"Target","walmart":"Walmart","bestbuy":"Best Buy","costco":"Costco","samsclub":"Sam's Club"}
+    if aliases.get(name)==retailer and url and retailer_domain_match(url,domain):
+     search_found.setdefault(url,str(alert.get("title","Pokémon TCG product"))[:250])
+  except (requests.RequestException,ValueError,KeyError,IndexError) as e:
+   log.warning("BujusJuJus feed unavailable for %s: %s",retailer,e)
  # DuckDuckGo is queried first because the Railway shared IP is currently
  # rate-limited by Google. Only direct retailer-domain product URLs are kept.
  try:
