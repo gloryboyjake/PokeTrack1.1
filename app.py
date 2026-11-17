@@ -476,15 +476,15 @@ def search_products(retailer):
  def fetch_candidate(item):
   u,title=item
   try:
-      page=retailer_get(u,headers=HEADERS,timeout=8)
-   if re.search(r"robot or human|captcha|verify you are human|access denied|unusual traffic",page.text[:30000],re.I):
+    page=retailer_get(u,headers=HEADERS,timeout=8)
+    if re.search(r"robot or human|captcha|verify you are human|access denied|unusual traffic",page.text[:30000],re.I):
+     reader_page=jina_read_url(u,timeout=18)
+     if reader_page: page=reader_page
+    return item,page
+   except Exception as e:
+    log.debug("Retailer product fetch failed for %s: %s",u,e)
     reader_page=jina_read_url(u,timeout=18)
-    if reader_page: page=reader_page
-   return item,page
-  except Exception as e:
-   log.debug("Retailer product fetch failed for %s: %s",u,e)
-   reader_page=jina_read_url(u,timeout=18)
-   return (item,reader_page) if reader_page else (item,None)
+    return (item,reader_page) if reader_page else (item,None)
  with ThreadPoolExecutor(max_workers=6) as pool:
   fetched=list(pool.map(fetch_candidate,candidates))
  log.info("%s: checking %s priority retailer product pages from %s candidates",retailer,len(candidates),len(found))
