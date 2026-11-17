@@ -188,7 +188,7 @@ def verify_retailer_seller(retailer, page_text):
 
 def popularity_for(title, page_text):
  t=(title or "").lower(); body=(page_text or "").lower(); score=0; reason=[]
- for pts,term in [(35,"30th celebration"),(32,"ascended heroes"),(30,"chaos rising"),(28,"pitch black"),(26,"prismatic evolutions"),(22,"pokemon day 2026"),(20,"first partner illustration"),(18,"delta reign"),(15,"mega evolution")]:
+ for pts,term in [(35,"30th celebration"),(32,"ascended heroes"),(30,"chaos rising"),(28,"pitch black"),(27,"perfect order"),(26,"prismatic evolutions"),(25,"phantasmal flames"),(24,"151"),(23,"destined rivals"),(22,"pokemon day 2026"),(20,"first partner illustration"),(19,"delta reign"),(18,"black bolt"),(18,"white flare"),(17,"journey together"),(16,"surging sparks"),(15,"mega evolution")]:
   if term in t: score=max(score,pts); reason.append(term.title())
  if re.search(r"best.?sell|popular|top seller|customer favorite",body): score+=8; reason.append("retailer popularity")
  return min(score,100),(", ".join(reason) or "standard TCG listing")
@@ -298,6 +298,15 @@ def tracker_candidates(retailer):
  TRACKER_CANDIDATES_CACHE_AT=time.time()
  return by_retailer.get(retailer,{})
 
+PRIORITY_PRODUCT_TERMS=[
+ "Pokemon 30th Celebration Elite Trainer Box","Pokemon Ascended Heroes Elite Trainer Box",
+ "Pokemon Chaos Rising Elite Trainer Box","Pokemon Pitch Black Elite Trainer Box",
+ "Pokemon Delta Reign Elite Trainer Box","Pokemon Perfect Order Elite Trainer Box",
+ "Pokemon Phantasmal Flames Elite Trainer Box","Pokemon Prismatic Evolutions Elite Trainer Box",
+ "Pokemon 151 Elite Trainer Box","Pokemon Destined Rivals Elite Trainer Box",
+ "Pokemon Black Bolt Elite Trainer Box","Pokemon White Flare Elite Trainer Box",
+ "Pokemon Journey Together Elite Trainer Box","Pokemon Surging Sparks Elite Trainer Box"
+]
 SEED_PRODUCT_URLS={
  "Target":["https://www.target.com/p/-/A-1010892076","https://www.target.com/p/-/A-1011483406"],
  "Walmart":["https://www.walmart.com/ip/15718673510","https://www.walmart.com/ip/20161351456","https://www.walmart.com/ip/20754418655","https://business.walmart.com/ip/POKEMON-SV10-DESTINED-RIVALS-D7-ELITE-TRAINER-BOX/19965460207"],
@@ -416,7 +425,7 @@ def search_products(retailer):
  # Skip external search engines when direct retailer catalog/sitemap discovery already found enough product URLs.
  if len(found) < 15:
   # Build one product-focused query from retailer and independent tracker catalogs.
-  tracked_terms=restockr_product_terms()[:6]
+  tracked_terms=list(dict.fromkeys(PRIORITY_PRODUCT_TERMS+restockr_product_terms()))[:8]
   q=f'site:{domain} Pokémon TCG trading cards booster Elite Trainer Box OR '+ " OR ".join('"'+x+'"' for x in tracked_terms)
   if not GOOGLE_RATE_LIMITED:
    try:
