@@ -445,6 +445,23 @@ def search_products(retailer):
      search_found.setdefault(u,(title or combined)[:250])
   except requests.RequestException as e:
    log.warning("Yahoo search unavailable for %s: %s",retailer,e)
+ for term in restockr_product_terms()[:5]:
+  if len(search_found)>=40: break
+  q=f'site:{domain} "{term}"'
+  for search_url,param_name in (("https://www.bing.com/search","q"),("https://search.yahoo.com/search","p")):
+   try:
+    r=requests.get(search_url,params={param_name:q},headers=HEADERS,timeout=15)
+    r.raise_for_status()
+    soup=BeautifulSoup(r.text,"html.parser")
+    for a in soup.select("a[href]"):
+     u=clean_url(a.get("href","")); title=a.get_text(" ",strip=True)
+     parent=a.parent.parent if a.parent else None
+     context=parent.get_text(" ",strip=True) if parent else ""
+     combined=(title+" "+context).strip()
+     if u and retailer_domain_match(u,domain) and is_pokemon_tcg_title(combined):
+      search_found.setdefault(u,(title or term)[:250])
+   except requests.RequestException as e:
+    log.debug("Product-specific search failed for %s via %s: %s",term,search_url,e)
  for u,title in search_found.items():
   found.setdefault(u,title)
  products=[]; c=conn()
