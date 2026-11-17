@@ -26,7 +26,7 @@ HEADERS={"User-Agent":UA,"Accept-Language":"en-US,en;q=0.9"}
 JINA_CALLS=0
 JINA_CALL_LIMIT=16
 JINA_LOCK=threading.Lock()
-def jina_read_url(target_url, timeout=18):
+def jina_read_url(target_url, timeout=8):
  global JINA_CALLS
  with JINA_LOCK:
   if JINA_CALLS>=JINA_CALL_LIMIT: return None
@@ -37,6 +37,7 @@ def jina_read_url(target_url, timeout=18):
   if not response.ok:
    log.warning("Jina Reader returned HTTP %s for %s",response.status_code,target_url[:160])
    return None
+  log.info("Jina Reader fetched %s (%s chars)",target_url[:120],len(response.text))
   return response
  except requests.RequestException as e:
   log.warning("Jina Reader failed for %s: %s",target_url[:160],e)
@@ -440,10 +441,10 @@ def search_products(retailer):
    except requests.RequestException as e:
     log.warning("Google Shopping discovery unavailable for %s: %s",retailer,e)
   # If Google's direct endpoint is rate-limited, use Jina Reader's free no-key proxy.
- if GOOGLE_RATE_LIMITED and len(search_found)<20:
+ if GOOGLE_RATE_LIMITED and len(search_found)<20 and retailer in ("Target","Walmart","Best Buy","Walgreens"):
   try:
    google_url=requests.Request("GET","https://www.google.com/search",params={"tbm":"shop","num":40,"q":q}).prepare().url
-   jr=jina_read_url(google_url,timeout=18)
+   jr=jina_read_url(google_url,timeout=8)
    if jr:
     for match in re.finditer(r'https?://[^\s\]\)\>"]+',jr.text):
      u=clean_url(match.group(0).rstrip(".,;"))
@@ -454,9 +455,9 @@ def search_products(retailer):
   except Exception as e:
    log.warning("Jina Google Shopping fallback failed for %s: %s",retailer,e)
  # Use three independent no-key search engines with short timeouts.
- for engine_url,param in (("https://www.bing.com/search","q"),("https://search.brave.com/search","q"),("https://www.startpage.com/sp/search","query")):
+ for engine_url,param in (("https://www.bing.com/search","q"),("https://search.brave.com/search","q")):
   try:
-   r=search_get(engine_url,params={param:q},headers=HEADERS,timeout=8)
+   r=search_get(engine_url,params={param:q},headers=HEADERS,timeout=5)
    r.raise_for_status()
    soup=BeautifulSoup(r.text,"html.parser")
    for a in soup.select("a[href]"):
@@ -478,7 +479,7 @@ def search_products(retailer):
   try:
    page=retailer_get(u,headers=HEADERS,timeout=8)
    if re.search(r"robot or human|captcha|verify you are human|access denied|unusual traffic",page.text[:30000],re.I):
-    reader_page=jina_read_url(u,timeout=18)
+    reader_page=jina_read_url(u,timeout=8)
     if reader_page: page=reader_page
    return item,page
   except Exception as e:
