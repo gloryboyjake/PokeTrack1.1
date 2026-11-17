@@ -8,7 +8,7 @@ A single Flask application and dashboard for discovering Pokémon TCG product li
 - Physical store directory: researched retailer branch locations in `store_directory.json`
 - Store refresh: ZIP-centroid geocoding and Haversine distance filtering
 - ZIP geocoding: Zippopotam.us with US Census fallback for the origin ZIP
-- Product discovery: public retailer search pages; no paid search API key
+- Product discovery: rendered retailer catalog and product pages in Chromium, retailer-owned sitemaps, curated product seeds, and public restock feeds; no search-engine scraping
 - Map services: none
 
 ## Store directory
