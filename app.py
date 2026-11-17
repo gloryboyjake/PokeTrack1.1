@@ -1,4 +1,4 @@
-import os, re, json, math, time, sqlite3, logging
+import os, re, json, math, time, sqlite3, logging, threading
 from datetime import datetime, timezone
 from urllib.parse import urlparse, urlunparse, parse_qs, unquote
 import requests
@@ -8,6 +8,7 @@ from flask import Flask, jsonify, request, render_template_string
 app=Flask(__name__)
 logging.basicConfig(level=os.getenv("LOG_LEVEL","INFO"))
 log=logging.getLogger("poketrack")
+SCAN_LOCK=threading.Lock()
 DB_PATH=os.getenv("DB_PATH","/data/poketrack.db")
 ZIP=os.getenv("START_ZIP","22601")
 RADIUS=int(os.getenv("RADIUS_MILES","200"))
@@ -33,7 +34,7 @@ CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);
 def now(): return datetime.now(timezone.utc).isoformat()
 def conn():
  os.makedirs(os.path.dirname(DB_PATH) or ".",exist_ok=True)
- c=sqlite3.connect(DB_PATH,timeout=30); c.row_factory=sqlite3.Row; c.executescript(SCHEMA)
+ c=sqlite3.connect(DB_PATH,timeout=60); c.row_factory=sqlite3.Row; c.execute("PRAGMA busy_timeout=60000"); c.execute("PRAGMA journal_mode=WAL"); c.executescript(SCHEMA)
  cols={row["name"] for row in c.execute("PRAGMA table_info(scan_runs)")}
  if "kind" not in cols: c.execute("ALTER TABLE scan_runs ADD COLUMN kind TEXT NOT NULL DEFAULT 'all'")
  if "finished_at" not in cols: c.execute("ALTER TABLE scan_runs ADD COLUMN finished_at TEXT")
@@ -110,7 +111,13 @@ def search_products(retailer):
   products.append({"retailer":retailer,"title":title,"url":u,"price":price,"availability":stock})
  c.commit(); c.close(); return products
 def run_scan(kind):
- c=conn(); cur=c.execute("INSERT INTO scan_runs(kind,started_at,status) VALUES(?,?,?)",(kind,now(),"running")); rid=cur.lastrowid;c.commit();c.close()
+ if not SCAN_LOCK.acquire(blocking=False):
+  return {"status":"busy","message":"A scan is already running. Please wait for it to finish."},409
+ try:
+  c=conn(); cur=c.execute("INSERT INTO scan_runs(kind,started_at,status) VALUES(?,?,?)",(kind,now(),"running")); rid=cur.lastrowid;c.commit();c.close()
+ except Exception:
+  SCAN_LOCK.release()
+  raise
  total=0; notes=[]
  try:
   if kind in ("all","stores"):
@@ -125,6 +132,8 @@ def run_scan(kind):
  except Exception as e:
   log.exception("scan failed");c=conn();c.execute("UPDATE scan_runs SET finished_at=?,status='error',found=?,message=? WHERE id=?",(now(),total,str(e)[:500],rid));c.commit();c.close()
   return {"status":"error","found":total,"message":str(e)},500
+ finally:
+  SCAN_LOCK.release()
 HTML="""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PokeTrack Radar</title><style>
 :root{color-scheme:dark;--bg:#090e19;--panel:#121b2b;--line:#26364d;--muted:#9aabc2;--accent:#62d6c5;--gold:#f5c76b}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:#edf4ff;font:15px system-ui}header{padding:24px max(18px,calc((100% - 1240px)/2));background:#101a2a;border-bottom:1px solid var(--line)}h1{margin:0;font-size:26px}header p,.muted{color:var(--muted)}main{max-width:1240px;margin:auto;padding:20px}.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}.panel,.stat{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:14px}.stat b{font-size:25px;display:block}.toolbar{display:flex;gap:10px;flex-wrap:wrap;margin:12px 0}.toolbar input,.toolbar select,button{background:#1b2940;color:#fff;border:1px solid #3b506c;border-radius:9px;padding:11px}button{cursor:pointer;background:#176e68;border:0;font-weight:700}.tabs{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}.tabs button{background:#24344d}.tabs button.active{background:#176e68}.item{padding:12px 0;border-top:1px solid var(--line);display:flex;justify-content:space-between;gap:12px}.item a{color:var(--accent)}.pill{border:1px solid #465b74;border-radius:20px;padding:3px 8px;font-size:12px;white-space:nowrap}.ok{color:#8ee0a9}.warn{color:var(--gold)}@media(max-width:760px){.grid{grid-template-columns:repeat(2,1fr)}.item{display:block}.item .pill{display:inline-block;margin-top:6px}}
 </style></head><body><header><h1>⚡ PokeTrack Radar</h1><p>Physical store discovery · Pokémon product listings · Winchester, VA 22601 · 200-mile radius</p></header><main>
