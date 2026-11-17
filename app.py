@@ -183,9 +183,9 @@ def restockr_product_terms():
  try:
   r=requests.get("https://rippr.app/restockr",headers=HEADERS,timeout=20); r.raise_for_status()
   text=BeautifulSoup(r.text,"html.parser").get_text(" ",strip=True)
-  pattern=re.compile(r"((?:(?:19|20)\\d{2}\\s+)?Pok[eé]mon[^$]{5,120}?)\\s+Pok[eé]mon\\s+\\$",re.I)
+  pattern=re.compile(r"((?:(?:19|20)\d{2}\s+)?Pok[eé]mon[^$]{5,120}?)\s+Pok[eé]mon\s+\$",re.I)
   for match in pattern.finditer(text):
-   title=re.sub(r"\\s+"," ",match.group(1)).strip()
+   title=re.sub(r"\s+"," ",match.group(1)).strip()
    if is_pokemon_tcg_title(title) and title.lower() not in [x.lower() for x in terms]:
     terms.append(title[:120])
  except requests.RequestException as e:
