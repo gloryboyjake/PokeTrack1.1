@@ -1,4 +1,5 @@
 import os, re, json, math, time, sqlite3, logging, threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from urllib.parse import urlparse, urlunparse, parse_qs, unquote
 import requests
@@ -510,10 +511,21 @@ def search_products(retailer):
  for u,title in search_found.items():
   found.setdefault(u,title)
  products=[]; c=conn()
- for u,title in list(found.items())[:50]:
+ priority=("30th","delta-reign","ascended-heroes","chaos-rising","pitch-black","prismatic","mega-evolution","151","charizard","booster-bundle","elite-trainer")
+ candidates=sorted(found.items(),key=lambda item:(0 if any(term in item[0].lower() for term in priority) else 1))[:15]
+ def fetch_candidate(item):
+  u,title=item
   try:
-   page=retailer_get(u,headers=HEADERS,timeout=18)
-   if not page.ok: continue
+   return item,retailer_get(u,headers=HEADERS,timeout=10)
+  except Exception as e:
+   log.debug("Retailer product fetch failed for %s: %s",u,e)
+   return item,None
+ with ThreadPoolExecutor(max_workers=6) as pool:
+  fetched=list(pool.map(fetch_candidate,candidates))
+ log.info("%s: checking %s priority retailer product pages from %s candidates",retailer,len(candidates),len(found))
+ for (u,title),page in fetched:
+  try:
+   if page is None or not page.ok: continue
    ps=BeautifulSoup(page.text,"html.parser")
    page_text=ps.get_text(" ",strip=True)
    embedded=" ".join(x.get_text(" ",strip=True) for x in ps.select("script[type='application/ld+json'],script#__NEXT_DATA__,script[type='application/json']"))
@@ -543,8 +555,8 @@ def search_products(retailer):
     discovery_sources=excluded.discovery_sources,stock_checked_at=excluded.stock_checked_at""",
     (retailer,title,u,price,stock,"retailer product page",t,t,1,seller,score,reason,"Direct retailer page + Google/DDG/Bing/Yahoo/TrackaLacker/Bujus (when enabled)",t))
    products.append({"retailer":retailer,"title":title,"url":u,"price":price,"availability":stock,"seller":seller,"popularity_score":score,"popularity_reason":reason})
-  except requests.RequestException as e:
-   log.warning("Retailer product page failed for %s (%s): %s",retailer,u,e)
+  except Exception as e:
+   log.warning("Retailer product page parse failed for %s (%s): %s",retailer,u,e)
  c.commit(); c.close()
  log.info("%s: %s retailer-owned Pokémon TCG product pages verified from %s candidates",retailer,len(products),len(found))
  return products
