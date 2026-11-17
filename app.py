@@ -92,49 +92,74 @@ def clean_url(u):
  if p.scheme not in ("http","https") or not p.netloc:return None
  if p.hostname and ("google." in p.hostname or "bing.com" in p.hostname):return None
  return urlunparse((p.scheme,p.netloc,p.path,"","",""))
+def direct_catalog_url(retailer):
+ # Public retailer catalog/search pages; no search-engine result pages or paid APIs.
+ urls={
+  "Target":"https://www.target.com/s?searchTerm=pokemon%20trading%20cards",
+  "Walmart":"https://www.walmart.com/search?q=pokemon%20trading%20cards",
+  "Walgreens":"https://www.walgreens.com/q/all-pokemon-cards",
+  "Best Buy":"https://www.bestbuy.com/site/searchpage.jsp?st=pokemon+trading+cards",
+  "Barnes & Noble":"https://www.barnesandnoble.com/s/pokemon%20trading%20cards",
+  "Costco":"https://www.costco.com/CatalogSearch?keyword=pokemon",
+  "Sam's Club":"https://www.samsclub.com/s/pokemon",
+  "Dollar General":"https://www.dollargeneral.com/search?query=pokemon",
+  "Hobby Lobby":"https://www.hobbylobby.com/search/?q=pokemon",
+  "Books-A-Million":"https://www.booksamillion.com/search?query=pokemon",
+  "Gabe's":"https://www.gabesstores.com/search?q=pokemon",
+  "Amazon":"https://www.amazon.com/s?k=pokemon+trading+cards"
+ }
+ return urls.get(retailer)
+def is_pokemon_tcg_title(title):
+ title=(title or "").lower()
+ if not re.search(r'pokemon|pokémon',title): return False
+ if re.search(r'figure|plush|costume|apparel|backpack|toy car|lunch box',title): return False
+ return bool(re.search(r'trading card|tcg|booster|elite trainer|etb|collection box|blister|tin|deck|card pack|card game',title))
 def search_products(retailer):
+ # Read retailer-owned catalog pages directly and follow their product links.
+ catalog=direct_catalog_url(retailer)
  domain=RETAILERS[retailer][0]
- q=f'site:{domain} Pokémon trading cards OR Pokémon TCG'
+ r=requests.get(catalog,headers=HEADERS,timeout=25)
+ r.raise_for_status()
+ soup=BeautifulSoup(r.text,"html.parser")
  found={}
- # Google can throttle shared cloud IPs; use Bing RSS as a fallback.
- try:
-  r=requests.get("https://www.google.com/search",params={"q":q,"num":20},headers=HEADERS,timeout=20)
-  if r.status_code == 429:
-   raise requests.HTTPError("Google rate limited this server (HTTP 429)")
-  r.raise_for_status()
-  soup=BeautifulSoup(r.text,"html.parser")
-  for a in soup.select("a[href]"):
-   u=clean_url(a.get("href")); title=a.get_text(" ",strip=True)
-   if u and (urlparse(u).hostname or "").endswith(domain) and title and re.search(r"pokemon|pokémon|trading card|tcg",title,re.I):
-    found[u]=title[:250]
- except requests.RequestException as google_error:
-  log.warning("Google unavailable for %s: %s; trying Bing RSS",retailer,google_error)
-  r=requests.get("https://www.bing.com/search",params={"q":q,"format":"rss"},headers=HEADERS,timeout=20)
-  r.raise_for_status()
-  soup=BeautifulSoup(r.text,"html.parser")
-  for item in soup.select("item"):
-   u=clean_url(item.link.get_text(strip=True) if item.link else "")
-   title=item.title.get_text(" ",strip=True) if item.title else ""
-   if u and (urlparse(u).hostname or "").endswith(domain) and title:
-    found[u]=title[:250]
- products=[]; c=conn()
- for u,title in list(found.items())[:10]:
-  price=None; stock="unknown"; source="retailer search result"
+ for a in soup.select("a[href]"):
+  u=clean_url(requests.compat.urljoin(catalog,a.get("href","")))
+  title=a.get_text(" ",strip=True)
+  if not u or not (urlparse(u).hostname or "").lower().endswith(domain): continue
+  if not title or not is_pokemon_tcg_title(title): continue
+  found[u]=title[:250]
+ # Some retailer catalogs expose product names in JSON-LD rather than anchor text.
+ for node in soup.select('script[type="application/ld+json"]'):
   try:
-   page=requests.get(u,headers=HEADERS,timeout=12)
+   data=json.loads(node.string or node.get_text())
+   stack=data if isinstance(data,list) else [data]
+   while stack:
+    obj=stack.pop()
+    if isinstance(obj,dict):
+     if isinstance(obj.get("@graph"),list): stack.extend(obj["@graph"])
+     name=obj.get("name"); url=obj.get("url")
+     if name and url and is_pokemon_tcg_title(name):
+      u=clean_url(requests.compat.urljoin(catalog,url))
+      if u and (urlparse(u).hostname or "").lower().endswith(domain): found[u]=str(name)[:250]
+     stack.extend(v for v in obj.values() if isinstance(v,(dict,list)))
+    elif isinstance(obj,list): stack.extend(obj)
+  except Exception: pass
+ products=[]; c=conn()
+ for u,title in list(found.items())[:35]:
+  price=None; stock="unknown"; source="retailer catalog page"
+  try:
+   page=requests.get(u,headers=HEADERS,timeout=18)
    if page.ok:
-    s=BeautifulSoup(page.text,"html.parser")
-    og=s.find("meta",property="og:title")
+    ps=BeautifulSoup(page.text,"html.parser")
+    og=ps.find("meta",property="og:title")
     if og and og.get("content"): title=og["content"][:250]
     for sel in ['meta[property="product:price:amount"]','meta[itemprop="price"]']:
-     n=s.select_one(sel)
+     n=ps.select_one(sel)
      if n and n.get("content"): price=n["content"]; break
-    body=s.get_text(" ",strip=True).lower()
-    if re.search(r"out of stock|sold out|currently unavailable",body): stock="out_of_stock"
-    elif re.search(r"add to cart|in stock|available now",body): stock="in_stock"
     source="retailer product page"
-  except requests.RequestException: pass
-  if not re.search(r"pokemon|pokémon|trading card|tcg",title,re.I): continue
+  except requests.RequestException as e:
+   log.warning("Product page fetch failed for %s: %s",u,e)
+  if not is_pokemon_tcg_title(title): continue
   t=now(); c.execute("""INSERT INTO products(retailer,title,url,price,availability,source,first_seen,last_seen)
    VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(url) DO UPDATE SET title=excluded.title,price=COALESCE(excluded.price,products.price),
    availability=excluded.availability,source=excluded.source,last_seen=excluded.last_seen""",(retailer,title,u,price,stock,source,t,t))
@@ -148,71 +173,75 @@ def branch_stock_status(blob):
   qty=int(m.group(1)) if m else None
   return "in_stock",qty,(str(qty) if qty is not None else "count unavailable")
  return "unknown",None,"count unavailable"
+def branch_matches_page(store, page_text):
+ text=(page_text or "").lower()
+ postcode=str(store.get("postcode") or "").strip().lower()
+ city=str(store.get("city") or "").strip().lower()
+ name=str(store.get("name") or "").strip().lower()
+ address=str(store.get("address") or "").strip().lower()
+ # Require an exact branch identifier, not merely the same retailer or ZIP region.
+ if postcode and postcode in text and city and city in text: return True
+ if name and len(name)>5 and name in text: return True
+ street=re.match(r'\s*(\d+)',address)
+ if street and city and re.search(r'\b'+re.escape(street.group(1))+r'\b',text) and city in text: return True
+ return False
+def inventory_status_from_product_page(page_text):
+ text=(page_text or "").lower()
+ # Do not interpret shipping, delivery, or generic Add to Cart as local store stock.
+ if re.search(r'not available at this store|not sold at your store|out of stock at this store|unavailable for pickup at this store',text):
+  return "out_of_stock",None,"Out of stock"
+ if re.search(r'in stock at this store|available for pickup at this store|pickup available at this store|in stock at \w[\w -]{0,45}store',text):
+  m=re.search(r'(?:only\s*)?(\d+)\s*(?:left|available|in stock)',text)
+  qty=int(m.group(1)) if m else None
+  return "in_stock",qty,(str(qty) if qty is not None else "count unavailable")
+ return "unknown",None,"count unavailable"
 def scan_store_inventory():
+ # Visit retailer-owned product pages directly. No Google/Bing snippets are used.
  c=conn()
  stores=[dict(x) for x in c.execute("SELECT * FROM stores ORDER BY retailer,distance")]
  products=[dict(x) for x in c.execute("SELECT * FROM products ORDER BY last_seen DESC")]
- c.execute("UPDATE store_inventory SET status='unknown',quantity=NULL,quantity_label='count unavailable',detail='Awaiting fresh branch-specific evidence',checked_at=?",(now(),));c.commit()
  by_retailer={}
  for p in products: by_retailer.setdefault(p["retailer"],[]).append(p)
- checked=0;confirmed=0
+ checked=0; confirmed=0; errors=0
  for store in stores:
-  domain=RETAILERS.get(store["retailer"],[None])[0]; candidates=by_retailer.get(store["retailer"],[])
-  check_time=now()
-  if not domain or not candidates:
+  candidates=by_retailer.get(store["retailer"],[])
+  matched=0; branch_hits=0
+  if not candidates:
    c.execute("INSERT INTO store_inventory_checks(store_id,status,checked_at,detail) VALUES(?,?,?,?) ON CONFLICT(store_id) DO UPDATE SET status=excluded.status,checked_at=excluded.checked_at,detail=excluded.detail",
-    (store["id"],"not_supported",check_time,"No matching retailer product pages are available to check for this branch."))
+    (store["id"],"no_products",now(),"No Pokémon TCG product pages have been discovered on this retailer's website yet."))
    continue
-  city=store.get("city") or ""; zip_code=store.get("postcode") or ""; address=store.get("address") or ""
-  m=re.match(r'\s*(\d+)',address); street_no=m.group(1) if m else ""
-  branch_name=(store.get("name") or "").lower()
-  query=f'site:{domain} pokemon ("in stock" OR "available for pickup" OR "pickup available") "{city}" "{zip_code}"'
-  try:
-   r=requests.get("https://www.google.com/search",params={"q":query,"num":10},headers=HEADERS,timeout=12)
-   if r.status_code==429: raise requests.HTTPError("Google rate limited")
-   r.raise_for_status(); soup=BeautifulSoup(r.text,"html.parser"); results=[]
-   for a in soup.select("a[href]"):
-    u=clean_url(a.get("href"))
-    if not u or not (urlparse(u).hostname or "").endswith(domain): continue
-    parent=a.find_parent("div",class_="MjjYud") or a.parent
-    snippet=parent.get_text(" ",strip=True) if parent else a.get_text(" ",strip=True)
-    results.append((u,snippet[:1600]))
-  except requests.RequestException:
+  for product in candidates[:35]:
    try:
-    r=requests.get("https://www.bing.com/search",params={"q":query,"format":"rss"},headers=HEADERS,timeout=12);r.raise_for_status()
-    soup=BeautifulSoup(r.text,"html.parser");results=[]
-    for item in soup.select("item"):
-     u=clean_url(item.link.get_text(strip=True) if item.link else "")
-     snippet=" ".join([item.title.get_text(" ",strip=True) if item.title else "",item.description.get_text(" ",strip=True) if item.description else ""])
-     if u and (urlparse(u).hostname or "").endswith(domain):results.append((u,snippet[:1600]))
+    response=requests.get(product["url"],headers=HEADERS,timeout=18)
+    if not response.ok: continue
+    page=BeautifulSoup(response.text,"html.parser")
+    page_text=page.get_text(" ",strip=True)
+    # Inspect embedded page state too; retailers often render inventory data in JSON.
+    embedded=" ".join(x.get_text(" ",strip=True) for x in page.select("script[type='application/ld+json'],script#__NEXT_DATA__,script[type='application/json']"))
+    combined=(page_text+" "+embedded)[:500000]
+    matched+=1
+    if not branch_matches_page(store,combined): continue
+    branch_hits+=1
+    status,qty,label=inventory_status_from_product_page(combined)
+    if status=="unknown": continue
+    checked_at=now()
+    c.execute("""INSERT INTO store_inventory(store_id,product_url,product_title,status,quantity,quantity_label,source_url,detail,checked_at)
+     VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(store_id,product_url) DO UPDATE SET product_title=excluded.product_title,status=excluded.status,quantity=excluded.quantity,quantity_label=excluded.quantity_label,source_url=excluded.source_url,detail=excluded.detail,checked_at=excluded.checked_at""",
+     (store["id"],product["url"],product["title"],status,qty,label,product["url"],"Availability and branch identity both found on the retailer's own product page",checked_at))
+    if status=="in_stock": confirmed+=1
    except requests.RequestException as e:
-    log.warning("Branch inventory search failed for %s: %s",store.get("name"),e)
-    c.execute("INSERT INTO store_inventory_checks(store_id,status,checked_at,detail) VALUES(?,?,?,?) ON CONFLICT(store_id) DO UPDATE SET status=excluded.status,checked_at=excluded.checked_at,detail=excluded.detail",
-     (store["id"],"error",now(),"Retailer search was unavailable; local stock was not determined."))
-    checked+=1
-    continue
+    errors+=1
+    log.warning("Direct product-page check failed for %s at %s: %s",product["url"],store.get("name"),e)
   checked+=1
-  matched_for_store=0
-  for u,snippet in results:
-   product=next((p for p in candidates if clean_url(p["url"])==u),None)
-   if not product: continue
-   lower=snippet.lower()
-   branch_match=(zip_code and zip_code in lower and (not city or city.lower() in lower)) or (street_no and street_no in lower and (not city or city.lower() in lower)) or (branch_name and branch_name not in store["retailer"].lower() and branch_name in lower)
-   if not branch_match: continue
-   status,qty,label=branch_stock_status(snippet)
-   if status=="unknown": continue
-   checked_at=now()
-   c.execute("""INSERT INTO store_inventory(store_id,product_url,product_title,status,quantity,quantity_label,source_url,detail,checked_at)
-    VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(store_id,product_url) DO UPDATE SET product_title=excluded.product_title,status=excluded.status,quantity=excluded.quantity,quantity_label=excluded.quantity_label,source_url=excluded.source_url,detail=excluded.detail,checked_at=excluded.checked_at""",
-    (store["id"],u,product["title"],status,qty,label,u,"Branch-specific retailer search result; verify before travelling",checked_at))
-   matched_for_store+=1
-   if status=="in_stock":confirmed+=1
+  state="checked" if branch_hits else ("error" if matched==0 else "no_match")
+  detail=(f"{branch_hits} retailer product page(s) identified this exact branch; local stock wording was evaluated." if branch_hits
+   else "Retailer product pages were opened directly, but none exposed this branch's identity and local stock together. Status remains unknown, not out of stock.")
   c.execute("INSERT INTO store_inventory_checks(store_id,status,checked_at,detail) VALUES(?,?,?,?) ON CONFLICT(store_id) DO UPDATE SET status=excluded.status,checked_at=excluded.checked_at,detail=excluded.detail",
-   (store["id"],"checked" if matched_for_store else "no_match",now(),
-    f"{matched_for_store} branch-specific product result(s) matched." if matched_for_store else "Search completed, but no branch-specific product result was confirmed. This does not mean out of stock."))
-  time.sleep(0.15)
- c.commit();c.close()
- return {"confirmed_products":confirmed,"message":f"Attempted checks for {checked} branches; {confirmed} product/branch matches explicitly reported in stock. Branches without specific evidence remain unverified, not out of stock."}
+   (store["id"],state,now(),detail))
+  c.commit()
+  time.sleep(0.1)
+ c.close()
+ return {"confirmed_products":confirmed,"message":f"Directly checked retailer product pages for {checked} branches; {confirmed} product/branch matches explicitly reported in stock. {errors} page requests failed. No search-engine snippets or guessed stock were used."}
 def run_scan(kind):
  if not SCAN_LOCK.acquire(blocking=False):
   return {"status":"busy","message":"A scan is already running. Please wait for it to finish."},409
