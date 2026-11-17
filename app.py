@@ -173,42 +173,52 @@ def online_stock_status(page_text, embedded_text=""):
  if re.search(r"add to cart|available to ship|in stock online|available online|ready to ship",text) and not re.search(r"aria-disabled=\"true\"|button[^>]*disabled",text): return "in_stock"
  return "unknown"
 
+TRACKER_CANDIDATES_CACHE={}
+TRACKER_CANDIDATES_CACHE_AT=0
 def tracker_candidates(retailer):
- # TrackaLacker is a public discovery source; retailer pages still decide final stock.
- domain=RETAILERS[retailer][0]
- found={}
- url="https://www.trackalacker.com/category/toys-and-games/trading-cards/pokemon?page=1"
+ global TRACKER_CANDIDATES_CACHE,TRACKER_CANDIDATES_CACHE_AT
+ if TRACKER_CANDIDATES_CACHE and time.time()-TRACKER_CANDIDATES_CACHE_AT<1800:
+  return TRACKER_CANDIDATES_CACHE.get(retailer,{})
+ # Fetch the public product catalog once per 30 minutes, not once per retailer.
+ by_retailer={name:{} for name in RETAILERS}
+ catalog="https://www.trackalacker.com/category/toys-and-games/trading-cards/pokemon?page=1"
  try:
-  r=requests.get(url,headers=HEADERS,timeout=20); r.raise_for_status()
+  r=requests.get(catalog,headers=HEADERS,timeout=20); r.raise_for_status()
   soup=BeautifulSoup(r.text,"html.parser")
   pages=[]
   for a in soup.select('a[href*="/products/showcase/"]'):
-   href=requests.compat.urljoin(url,a.get("href",""))
-   title=a.get_text(" ",strip=True)
-   if href not in pages and (not title or "pokemon" in title.lower() or "30th" in title.lower()):
-    pages.append(href)
-  for product_url in pages[:20]:
+   href=requests.compat.urljoin(catalog,a.get("href",""))
+   if href not in pages: pages.append(href)
+  for product_url in pages[:16]:
    try:
-    pr=requests.get(product_url,headers=HEADERS,timeout=15); pr.raise_for_status()
+    pr=requests.get(product_url,headers=HEADERS,timeout=12); pr.raise_for_status()
     ps=BeautifulSoup(pr.text,"html.parser")
     h=ps.find(["h1","h2"])
     product_title=h.get_text(" ",strip=True) if h else (ps.title.get_text(" ",strip=True) if ps.title else "")
     if not is_pokemon_tcg_title(product_title): continue
     for link in ps.select('a[href*="/listings/"]'):
      label=link.get_text(" ",strip=True).lower()
-     if retailer.lower().replace("&","and") not in label.replace("&","and"): continue
+     matched=[]
+     for name in RETAILERS:
+      if name.lower() in label or (name=="Sam's Club" and "sams club" in label):
+       matched.append(name)
+     if not matched: continue
      listing_url=requests.compat.urljoin(product_url,link.get("href",""))
-     lr=requests.get(listing_url,headers=HEADERS,timeout=15); lr.raise_for_status()
+     lr=requests.get(listing_url,headers=HEADERS,timeout=12); lr.raise_for_status()
      ls=BeautifulSoup(lr.text,"html.parser")
      for out in ls.select("a[href]"):
       direct=clean_url(requests.compat.urljoin(listing_url,out.get("href","")))
-      if direct and retailer_domain_match(direct,domain):
-       found.setdefault(direct,product_title[:250])
+      if not direct: continue
+      for name in matched:
+       if retailer_domain_match(direct,RETAILERS[name][0]):
+        by_retailer[name].setdefault(direct,product_title[:250])
    except requests.RequestException as e:
     log.debug("TrackaLacker listing unavailable: %s",e)
  except requests.RequestException as e:
-  log.warning("TrackaLacker discovery unavailable for %s: %s",retailer,e)
- return found
+  log.warning("TrackaLacker discovery unavailable: %s",e)
+ TRACKER_CANDIDATES_CACHE=by_retailer
+ TRACKER_CANDIDATES_CACHE_AT=time.time()
+ return by_retailer.get(retailer,{})
 
 def search_products(retailer):
  global GOOGLE_RATE_LIMITED
