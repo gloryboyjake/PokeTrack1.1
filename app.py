@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS poketrack_scan_runs(id INTEGER PRIMARY KEY, kind TEXT
  finished_at TEXT, status TEXT NOT NULL, found INTEGER DEFAULT 0, message TEXT);
 CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS store_inventory(id INTEGER PRIMARY KEY,store_id INTEGER NOT NULL,product_url TEXT NOT NULL,product_title TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'unknown',quantity INTEGER,quantity_label TEXT NOT NULL DEFAULT 'count unavailable',source_url TEXT,detail TEXT,checked_at TEXT NOT NULL,UNIQUE(store_id,product_url));
+CREATE TABLE IF NOT EXISTS store_inventory_checks(store_id INTEGER PRIMARY KEY,status TEXT NOT NULL,checked_at TEXT NOT NULL,detail TEXT);
 """
 def now(): return datetime.now(timezone.utc).isoformat()
 def conn():
@@ -157,7 +158,11 @@ def scan_store_inventory():
  checked=0;confirmed=0
  for store in stores:
   domain=RETAILERS.get(store["retailer"],[None])[0]; candidates=by_retailer.get(store["retailer"],[])
-  if not domain or not candidates: continue
+  check_time=now()
+  if not domain or not candidates:
+   c.execute("INSERT INTO store_inventory_checks(store_id,status,checked_at,detail) VALUES(?,?,?,?) ON CONFLICT(store_id) DO UPDATE SET status=excluded.status,checked_at=excluded.checked_at,detail=excluded.detail",
+    (store["id"],"not_supported",check_time,"No matching retailer product pages are available to check for this branch."))
+   continue
   city=store.get("city") or ""; zip_code=store.get("postcode") or ""; address=store.get("address") or ""
   m=re.match(r'\s*(\d+)',address); street_no=m.group(1) if m else ""
   branch_name=(store.get("name") or "").lower()
@@ -181,8 +186,13 @@ def scan_store_inventory():
      snippet=" ".join([item.title.get_text(" ",strip=True) if item.title else "",item.description.get_text(" ",strip=True) if item.description else ""])
      if u and (urlparse(u).hostname or "").endswith(domain):results.append((u,snippet[:1600]))
    except requests.RequestException as e:
-    log.warning("Branch inventory search failed for %s: %s",store.get("name"),e);checked+=1;continue
+    log.warning("Branch inventory search failed for %s: %s",store.get("name"),e)
+    c.execute("INSERT INTO store_inventory_checks(store_id,status,checked_at,detail) VALUES(?,?,?,?) ON CONFLICT(store_id) DO UPDATE SET status=excluded.status,checked_at=excluded.checked_at,detail=excluded.detail",
+     (store["id"],"error",now(),"Retailer search was unavailable; local stock was not determined."))
+    checked+=1
+    continue
   checked+=1
+  matched_for_store=0
   for u,snippet in results:
    product=next((p for p in candidates if clean_url(p["url"])==u),None)
    if not product: continue
@@ -195,10 +205,14 @@ def scan_store_inventory():
    c.execute("""INSERT INTO store_inventory(store_id,product_url,product_title,status,quantity,quantity_label,source_url,detail,checked_at)
     VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(store_id,product_url) DO UPDATE SET product_title=excluded.product_title,status=excluded.status,quantity=excluded.quantity,quantity_label=excluded.quantity_label,source_url=excluded.source_url,detail=excluded.detail,checked_at=excluded.checked_at""",
     (store["id"],u,product["title"],status,qty,label,u,"Branch-specific retailer search result; verify before travelling",checked_at))
+   matched_for_store+=1
    if status=="in_stock":confirmed+=1
+  c.execute("INSERT INTO store_inventory_checks(store_id,status,checked_at,detail) VALUES(?,?,?,?) ON CONFLICT(store_id) DO UPDATE SET status=excluded.status,checked_at=excluded.checked_at,detail=excluded.detail",
+   (store["id"],"checked" if matched_for_store else "no_match",now(),
+    f"{matched_for_store} branch-specific product result(s) matched." if matched_for_store else "Search completed, but no branch-specific product result was confirmed. This does not mean out of stock."))
   time.sleep(0.15)
  c.commit();c.close()
- return {"confirmed_products":confirmed,"message":f"Checked {checked} branches; {confirmed} product/branch matches explicitly reported in stock. Stores without branch-specific evidence remain unknown."}
+ return {"confirmed_products":confirmed,"message":f"Attempted checks for {checked} branches; {confirmed} product/branch matches explicitly reported in stock. Branches without specific evidence remain unverified, not out of stock."}
 def run_scan(kind):
  if not SCAN_LOCK.acquire(blocking=False):
   return {"status":"busy","message":"A scan is already running. Please wait for it to finish."},409
@@ -236,7 +250,7 @@ HTML="""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="v
 let mode='stores',stores=[],products=[],history=[],inventory=[];function tab(m,b){mode=m;document.querySelectorAll('.tabs button').forEach(x=>x.classList.remove('active'));b.classList.add('active');draw()}
 async function load(){try{let [a,b,c,d,e]=await Promise.all(['/api/stores','/api/products','/api/history','/api/summary','/api/inventory'].map(x=>fetch(x).then(r=>r.json())));stores=a.stores||[];products=b.products||[];history=c.runs||[];inventory=e.inventory||[];document.getElementById('stores').textContent=stores.length;document.getElementById('products').textContent=products.length;document.getElementById('stock').textContent=inventory.filter(x=>x.status==='in_stock').length;document.getElementById('last').textContent=d.last_scan?new Date(d.last_scan).toLocaleString():'—';let opts=[...new Set([...stores,...products].map(x=>x.retailer))].sort();document.getElementById('retailer').innerHTML='<option value="">All retailers</option>'+opts.map(x=>'<option>'+esc(x)+'</option>').join('');draw()}catch(e){document.getElementById('list').textContent='Could not load dashboard data: '+e}}
 function esc(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
-function draw(){let q=document.getElementById('q').value.toLowerCase(),r=document.getElementById('retailer').value,a=document.getElementById('availability').value;let rows=mode==='stores'?stores:mode==='products'?products:history;rows=rows.filter(x=>(!r||x.retailer===r)&&(!a||x.availability===a)&&JSON.stringify(x).toLowerCase().includes(q));document.getElementById('list').innerHTML=rows.length?rows.map(x=>mode==='stores'?'<div class="item"><div><b>'+esc(x.name)+'</b><div class="muted">'+esc(x.retailer)+' · '+esc(x.address||x.city||'Address not listed')+'</div><div class="muted">'+Number(x.distance).toFixed(1)+' miles from 22601 · <a href="'+esc(x.source_url)+'" target="_blank">Store page</a></div><div class="ok"><b>'+Number(x.in_stock_products||0)+' Pokémon products confirmed in stock</b></div><details><summary>View branch inventory</summary>'+((inventory.filter(y=>y.store_id===x.id).length)?inventory.filter(y=>y.store_id===x.id).map(y=>'<div class="muted">'+esc(y.product_title)+' — '+(y.status==='in_stock'?'In stock — '+esc(y.quantity_label):y.status==='out_of_stock'?'Out of stock':'Unknown')+' · '+esc(y.checked_at||'')+' · <a href="'+esc(y.source_url)+'" target="_blank">Product page</a></div>').join(''):'<div class="muted">No verified branch-specific product results. This does not mean the store is out of stock.</div>')+'</details></div><span class="pill">'+esc(x.inventory_checked_at?'Checked '+new Date(x.inventory_checked_at).toLocaleString():'Not checked')+'</span></div>':mode==='products'?'<div class="item"><div><b><a href="'+esc(x.url)+'" target="_blank">'+esc(x.title)+'</a></b><div class="muted">'+esc(x.retailer)+' · '+esc(x.price||'Price not listed')+'</div></div><span class="pill">'+esc(x.availability)+'</span></div>':'<div class="item"><div><b>'+esc(x.kind)+' · '+esc(x.status)+'</b><div class="muted">'+esc(x.message)+'</div></div><span class="pill">'+esc(x.started_at)+'</span></div>').join(''):'<p class="muted">No matching records yet. Run a scan to populate this section.</p>'}
+function draw(){let q=document.getElementById('q').value.toLowerCase(),r=document.getElementById('retailer').value,a=document.getElementById('availability').value;let rows=mode==='stores'?stores:mode==='products'?products:history;rows=rows.filter(x=>(!r||x.retailer===r)&&(!a||x.availability===a)&&JSON.stringify(x).toLowerCase().includes(q));document.getElementById('list').innerHTML=rows.length?rows.map(x=>mode==='stores'?'<div class="item"><div><b>'+esc(x.name)+'</b><div class="muted">'+esc(x.retailer)+' · '+esc(x.address||x.city||'Address not listed')+'</div><div class="muted">'+Number(x.distance).toFixed(1)+' miles from 22601 · <a href="'+esc(x.source_url)+'" target="_blank">Store page</a></div><div class="ok"><b>'+(x.inventory_check_status==='checked'&&Number(x.in_stock_products||0)>0?Number(x.in_stock_products)+' Pokémon products reported in stock':x.inventory_check_status==='no_match'?'Checked — no branch-specific stock result found':x.inventory_check_status==='error'?'Inventory check failed — stock unknown':x.inventory_check_status==='not_supported'?'Not checked — no matching product pages':x.inventory_check_status==='checked'?'Checked — no products reported in stock':'Local inventory not checked')+'</b></div><details><summary>View branch inventory</summary>'+((inventory.filter(y=>y.store_id===x.id).length)?inventory.filter(y=>y.store_id===x.id).map(y=>'<div class="muted">'+esc(y.product_title)+' — '+(y.status==='in_stock'?'In stock — '+esc(y.quantity_label):y.status==='out_of_stock'?'Out of stock':'Unknown')+' · '+esc(y.checked_at||'')+' · <a href="'+esc(y.source_url)+'" target="_blank">Product page</a></div>').join(''):'<div class="muted">No verified branch-specific product results. This does not mean the store is out of stock.</div>')+'</details></div><span class="pill">'+esc(x.inventory_check_time?'Checked '+new Date(x.inventory_check_time).toLocaleString():'Not checked')+'</span></div>':mode==='products'?'<div class="item"><div><b><a href="'+esc(x.url)+'" target="_blank">'+esc(x.title)+'</a></b><div class="muted">'+esc(x.retailer)+' · '+esc(x.price||'Price not listed')+'</div></div><span class="pill">'+esc(x.availability)+'</span></div>':'<div class="item"><div><b>'+esc(x.kind)+' · '+esc(x.status)+'</b><div class="muted">'+esc(x.message)+'</div></div><span class="pill">'+esc(x.started_at)+'</span></div>').join(''):'<p class="muted">No matching records yet. Run a scan to populate this section.</p>'}
 async function scan(kind){let m=document.getElementById('msg');m.textContent='Starting scan…';try{let r=await fetch('/api/scan?kind='+kind,{method:'POST'}),d=await r.json();m.textContent=d.message||d.error||'Scan started';if(!r.ok)return;let tries=0;let timer=setInterval(async()=>{tries++;await load();let running=history.some(x=>x.status==='running');if(!running||tries>=180){clearInterval(timer);m.textContent=running?'Scan is still running; you can keep using the dashboard.':'Scan finished. '+(history[0]?.message||'Results refreshed.')}},4000)}catch(e){m.textContent='Scan failed: '+e}}
 load();setInterval(load,60000);
 </script></body></html>"""
@@ -248,7 +262,7 @@ def health():
  except Exception as e:return jsonify(ok=False,error=str(e)),500
 @app.get("/api/stores")
 def api_stores():
- c=conn();rows=[dict(x) for x in c.execute("""SELECT s.*,COALESCE(SUM(CASE WHEN i.status='in_stock' THEN 1 ELSE 0 END),0) AS in_stock_products,MAX(i.checked_at) AS inventory_checked_at FROM stores s LEFT JOIN store_inventory i ON i.store_id=s.id GROUP BY s.id ORDER BY s.distance,s.retailer""")];c.close();return jsonify(stores=rows)
+ c=conn();rows=[dict(x) for x in c.execute("""SELECT s.*,COALESCE(SUM(CASE WHEN i.status='in_stock' THEN 1 ELSE 0 END),0) AS in_stock_products,MAX(i.checked_at) AS inventory_checked_at,MAX(k.status) AS inventory_check_status,MAX(k.checked_at) AS inventory_check_time FROM stores s LEFT JOIN store_inventory i ON i.store_id=s.id LEFT JOIN store_inventory_checks k ON k.store_id=s.id GROUP BY s.id ORDER BY s.distance,s.retailer""")];c.close();return jsonify(stores=rows)
 @app.get("/api/inventory")
 def api_inventory():
  c=conn();rows=[dict(x) for x in c.execute("""SELECT i.*,s.name AS store_name,s.retailer,s.address,s.city,s.state FROM store_inventory i JOIN stores s ON s.id=i.store_id ORDER BY s.distance,s.retailer,s.name,i.product_title""")];c.close();return jsonify(inventory=rows)
