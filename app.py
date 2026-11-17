@@ -127,7 +127,8 @@ CREATE TABLE IF NOT EXISTS products(id INTEGER PRIMARY KEY, retailer TEXT NOT NU
  source TEXT NOT NULL, first_seen TEXT NOT NULL, last_seen TEXT NOT NULL,last_checked TEXT NOT NULL DEFAULT '',
  seller_verified INTEGER NOT NULL DEFAULT 0, seller_name TEXT, popularity_score INTEGER NOT NULL DEFAULT 0, popularity_reason TEXT);
 CREATE TABLE IF NOT EXISTS poketrack_scan_runs(id INTEGER PRIMARY KEY, kind TEXT NOT NULL, started_at TEXT NOT NULL,
- finished_at TEXT, status TEXT NOT NULL, found INTEGER DEFAULT 0, message TEXT);
+ finished_at TEXT, status TEXT NOT NULL, found INTEGER DEFAULT 0, message TEXT,
+ progress INTEGER NOT NULL DEFAULT 0, phase TEXT NOT NULL DEFAULT '', current INTEGER NOT NULL DEFAULT 0, total INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS store_inventory(id INTEGER PRIMARY KEY,store_id INTEGER NOT NULL,product_url TEXT NOT NULL,product_title TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'unknown',quantity INTEGER,quantity_label TEXT NOT NULL DEFAULT 'count unavailable',source_url TEXT,detail TEXT,checked_at TEXT NOT NULL,UNIQUE(store_id,product_url));
 CREATE TABLE IF NOT EXISTS store_inventory_checks(store_id INTEGER PRIMARY KEY,status TEXT NOT NULL,checked_at TEXT NOT NULL,detail TEXT);
@@ -149,6 +150,9 @@ def conn():
      raise RuntimeError("SQLite WAL mode could not be enabled; got "+str(mode))
     c.execute("PRAGMA synchronous=NORMAL")
     c.executescript(SCHEMA)
+    scan_cols={r[1] for r in c.execute("PRAGMA table_info(poketrack_scan_runs)")}
+    for name,decl in [("progress","INTEGER NOT NULL DEFAULT 0"),("phase","TEXT NOT NULL DEFAULT ''"),("current","INTEGER NOT NULL DEFAULT 0"),("total","INTEGER NOT NULL DEFAULT 0")]:
+     if name not in scan_cols: c.execute(f"ALTER TABLE poketrack_scan_runs ADD COLUMN {name} {decl}")
     cols={r[1] for r in c.execute("PRAGMA table_info(products)")}
     for name,decl in [("last_checked","TEXT NOT NULL DEFAULT ''"),("seller_verified","INTEGER NOT NULL DEFAULT 0"),("seller_name","TEXT"),("popularity_score","INTEGER NOT NULL DEFAULT 0"),("popularity_reason","TEXT"),("discovery_sources","TEXT"),("stock_checked_at","TEXT")]:
      if name not in cols: c.execute(f"ALTER TABLE products ADD COLUMN {name} {decl}")
@@ -623,17 +627,21 @@ def inventory_status_from_product_page(page_text):
   qty=int(m.group(1)) if m else None
   return "in_stock",qty,(str(qty) if qty is not None else "count unavailable")
  return "unknown",None,"count unavailable"
-def scan_store_inventory():
+def scan_store_inventory(progress_callback=None):
  c=conn()
  stores=[dict(x) for x in c.execute("SELECT * FROM stores ORDER BY retailer,distance")]
  products=[dict(x) for x in c.execute("SELECT * FROM products WHERE seller_verified=1 ORDER BY popularity_score DESC,last_seen DESC LIMIT 30")]
  checked=0; confirmed=0; unknown=0; errors=0; unsupported=0
+ target_stores=[x for x in stores if x["retailer"]=="Target"]
+ work_total=max(1,len(stores)+len(target_stores)*len(products)); work_done=0
  for store in stores:
   if store["retailer"]!="Target":
    unsupported+=1
    detail="This retailer does not expose a supported branch-level stock source yet; online listings are not counted as local stock."
    c.execute("INSERT INTO store_inventory_checks(store_id,status,checked_at,detail) VALUES(?,?,?,?) ON CONFLICT(store_id) DO UPDATE SET status=excluded.status,checked_at=excluded.checked_at,detail=excluded.detail",(store["id"],"unsupported",now(),detail))
-   c.commit(); continue
+   c.commit(); work_done+=1
+   if progress_callback: progress_callback(work_done,work_total,"Skipping unsupported branch-level source")
+   continue
   branch_rows=[]; failures=0
   for product in products:
    try:
@@ -656,6 +664,9 @@ def scan_store_inventory():
    except Exception as e:
     failures+=1
     log.warning("Target browser check failed for %s at %s: %s",product.get("title"),store.get("name"),str(e)[:180])
+   finally:
+    work_done+=1
+    if progress_callback: progress_callback(work_done,work_total,f"Checking {store.get('name','Target branch')} — {product.get('title','product')}")
   if branch_rows:
    c.execute("DELETE FROM store_inventory WHERE store_id=?",(store["id"],))
   for url,title,status,quantity,evidence in branch_rows:
@@ -673,44 +684,62 @@ def scan_store_inventory():
  c.close()
  return {"confirmed_products":confirmed,"message":f"Browser-based retailer scan: {checked} Target branches visited; {confirmed} confirmed product/store listings in stock; {unknown} unknown; {errors} branch errors; {unsupported} other retailer branches not yet supported."}
 
+def update_scan_progress(run_id, progress, phase, current=0, total=0):
+ c=conn()
+ c.execute("UPDATE poketrack_scan_runs SET progress=?,phase=?,current=?,total=? WHERE id=? AND status='running'",
+  (max(0,min(99,int(progress))),str(phase)[:240],int(current),int(total),run_id))
+ c.commit();c.close()
+
 def run_scan(kind):
  global JINA_CALLS
  if not SCAN_LOCK.acquire(blocking=False):
   return {"status":"busy","message":"A scan is already running. Please wait for it to finish."},409
  JINA_CALLS=0
  try:
-  c=conn(); cur=c.execute("INSERT INTO poketrack_scan_runs(kind,started_at,status) VALUES(?,?,?)",(kind,now(),"running")); rid=cur.lastrowid;c.commit();c.close()
+  c=conn(); cur=c.execute("INSERT INTO poketrack_scan_runs(kind,started_at,status,progress,phase) VALUES(?,?,?,0,?)",(kind,now(),"running","Starting scan")); rid=cur.lastrowid;c.commit();c.close()
  except Exception:
   SCAN_LOCK.release()
   raise
  total=0; notes=[]
  try:
   if kind in ("all","stores"):
+   update_scan_progress(rid,1,"Discovering physical store locations",0,1)
    n=discover_stores();total+=n;notes.append(f"{n} physical store locations discovered")
+   update_scan_progress(rid,10 if kind=="all" else 95,"Physical store directory refreshed",1,1)
   if kind in ("all","products"):
-   for retailer in RETAILERS:
+   retailer_names=list(RETAILERS)
+   for idx,retailer in enumerate(retailer_names,1):
+    phase_pct=(10+int(idx*60/len(retailer_names))) if kind=="all" else int(idx*95/len(retailer_names))
+    update_scan_progress(rid,phase_pct-1,f"Scanning {retailer} product listings",idx-1,len(retailer_names))
     try:
      n=len(search_products(retailer));total+=n;notes.append(f"{retailer}: {n} product pages")
     except Exception as e: notes.append(f"{retailer}: {str(e)[:100]}")
+    update_scan_progress(rid,phase_pct,f"Scanned {retailer} product listings",idx,len(retailer_names))
   if kind in ("all","inventory"):
-   result=scan_store_inventory();total+=result["confirmed_products"];notes.append(result["message"])
-  msg="; ".join(notes); c=conn();c.execute("UPDATE poketrack_scan_runs SET finished_at=?,status='completed',found=?,message=? WHERE id=?",(now(),total,msg,rid));c.commit();c.close()
+   base=70 if kind=="all" else 0
+   span=29 if kind=="all" else 95
+   def inventory_progress(current,work_total,phase):
+    pct=base+int(span*current/max(1,work_total))
+    update_scan_progress(rid,pct,phase,current,work_total)
+   result=scan_store_inventory(progress_callback=inventory_progress);total+=result["confirmed_products"];notes.append(result["message"])
+  msg="; ".join(notes); c=conn();c.execute("UPDATE poketrack_scan_runs SET finished_at=?,status='completed',found=?,message=?,progress=100,phase='Completed',current=1,total=1 WHERE id=?",(now(),total,msg,rid));c.commit();c.close()
   return {"status":"completed","found":total,"message":msg}
  except Exception as e:
-  log.exception("scan failed");c=conn();c.execute("UPDATE poketrack_scan_runs SET finished_at=?,status='error',found=?,message=? WHERE id=?",(now(),total,str(e)[:500],rid));c.commit();c.close()
+  log.exception("scan failed");c=conn();c.execute("UPDATE poketrack_scan_runs SET finished_at=?,status='error',found=?,message=?,phase='Failed' WHERE id=?",(now(),total,str(e)[:500],rid));c.commit();c.close()
   return {"status":"error","found":total,"message":str(e)},500
  finally:
   SCAN_LOCK.release()
 HTML="""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PokeTrack Radar</title><style>
-:root{color-scheme:dark;--bg:#090e19;--panel:#121b2b;--line:#26364d;--muted:#9aabc2;--accent:#62d6c5;--gold:#f5c76b}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:#edf4ff;font:15px system-ui}header{padding:24px max(18px,calc((100% - 1240px)/2));background:#101a2a;border-bottom:1px solid var(--line)}h1{margin:0;font-size:26px}header p,.muted{color:var(--muted)}main{max-width:1240px;margin:auto;padding:20px}.grid{display:grid;grid-template-columns:repeat(5,1fr);gap:12px}.panel,.stat{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:14px}.stat b{font-size:25px;display:block}.toolbar{display:flex;gap:10px;flex-wrap:wrap;margin:12px 0}.toolbar input,.toolbar select,button{background:#1b2940;color:#fff;border:1px solid #3b506c;border-radius:9px;padding:11px}button{cursor:pointer;background:#176e68;border:0;font-weight:700}.tabs{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}.tabs button{background:#24344d}.tabs button.active{background:#176e68}.item{padding:12px 0;border-top:1px solid var(--line);display:flex;justify-content:space-between;gap:12px}.item a{color:var(--accent)}.pill{border:1px solid #465b74;border-radius:20px;padding:3px 8px;font-size:12px;white-space:nowrap}.ok{color:#8ee0a9}.warn{color:var(--gold)}@media(max-width:760px){.grid{grid-template-columns:repeat(2,1fr)}.item{display:block}.item .pill{display:inline-block;margin-top:6px}}
+:root{color-scheme:dark;--bg:#090e19;--panel:#121b2b;--line:#26364d;--muted:#9aabc2;--accent:#62d6c5;--gold:#f5c76b}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:#edf4ff;font:15px system-ui}header{padding:24px max(18px,calc((100% - 1240px)/2));background:#101a2a;border-bottom:1px solid var(--line)}h1{margin:0;font-size:26px}header p,.muted{color:var(--muted)}main{max-width:1240px;margin:auto;padding:20px}.grid{display:grid;grid-template-columns:repeat(5,1fr);gap:12px}.panel,.stat{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:14px}.stat b{font-size:25px;display:block}.toolbar{display:flex;gap:10px;flex-wrap:wrap;margin:12px 0}.toolbar input,.toolbar select,button{background:#1b2940;color:#fff;border:1px solid #3b506c;border-radius:9px;padding:11px}button{cursor:pointer;background:#176e68;border:0;font-weight:700}.tabs{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}.tabs button{background:#24344d}.tabs button.active{background:#176e68}.item{padding:12px 0;border-top:1px solid var(--line);display:flex;justify-content:space-between;gap:12px}.item a{color:var(--accent)}.pill{border:1px solid #465b74;border-radius:20px;padding:3px 8px;font-size:12px;white-space:nowrap}.ok{color:#8ee0a9}.warn{color:var(--gold)}.scan-progress{margin-top:14px;padding:12px;background:#0d1625;border:1px solid var(--line);border-radius:10px}.scan-progress-head{display:flex;justify-content:space-between;gap:12px;align-items:center;margin-bottom:8px}.progress-track{height:12px;background:#26364d;border-radius:20px;overflow:hidden}.progress-fill{height:100%;width:0;background:var(--accent);transition:width .35s ease;border-radius:20px}.progress-meta{display:flex;justify-content:space-between;gap:10px;margin-top:7px;font-size:12px;color:var(--muted)}@media(max-width:760px){.grid{grid-template-columns:repeat(2,1fr)}.item{display:block}.item .pill{display:inline-block;margin-top:6px}}
 </style></head><body><header><h1>⚡ PokeTrack Radar</h1><p>Physical store discovery · Pokémon product listings · Winchester, VA 22601 · 80-mile radius</p></header><main>
 <div class="grid"><div class="stat"><b id="stores">—</b><span class="muted">Physical stores found</span></div><div class="stat"><b id="products">—</b><span class="muted">Product listings</span></div><div class="stat"><b id="stock">—</b><span class="muted">In-store products confirmed</span></div><div class="stat"><b id="onlineStock">—</b><span class="muted">Online products in stock (retailer-reported)</span></div><div class="stat"><b id="last">—</b><span class="muted">Last completed scan</span></div></div>
-<section class="panel"><h2>Radar controls</h2><p class="muted">Store locations come from a researched retailer branch directory. Online stock is counted separately from physical-store stock. Online counts include only verified retailer-owned product pages that explicitly report online availability. Physical-store counts require branch-specific evidence; blocked or unconfirmed results remain unknown.</p><div class="toolbar"><button onclick="scan('all')">Run full scan</button><button onclick="scan('stores')">Refresh store directory</button><button onclick="scan('products')">Scan product listings</button><button onclick="scan('inventory')">Browser-based store stock scan</button><span id="msg" class="muted">Ready</span></div></section>
+<section class="panel"><h2>Radar controls</h2><p class="muted">Store locations come from a researched retailer branch directory. Online stock is counted separately from physical-store stock. Online counts include only verified retailer-owned product pages that explicitly report online availability. Physical-store counts require branch-specific evidence; blocked or unconfirmed results remain unknown.</p><div class="toolbar"><button onclick="scan('all')">Run full scan</button><button onclick="scan('stores')">Refresh store directory</button><button onclick="scan('products')">Scan product listings</button><button onclick="scan('inventory')">Browser-based store stock scan</button><span id="msg" class="muted">Ready</span></div><div class="scan-progress"><div class="scan-progress-head"><b id="progressPhase">No scan running</b><b id="progressPercent">0%</b></div><div class="progress-track"><div id="progressFill" class="progress-fill"></div></div><div class="progress-meta"><span id="progressCount">Waiting for scan</span><span id="progressState">Idle</span></div></div></section>
 <div class="tabs"><button class="active" onclick="tab('stores',this)">Physical stores</button><button onclick="tab('products',this)">Product listings</button><button onclick="tab('history',this)">Scan history</button></div>
 <section class="panel"><div class="toolbar"><input id="q" placeholder="Filter by store, city, product…" oninput="draw()"><select id="retailer" onchange="draw()"><option value="">All retailers</option></select><select id="availability" onchange="draw()"><option value="">All availability</option><option value="in_stock">Explicitly in stock</option><option value="out_of_stock">Explicitly sold out</option><option value="unknown">Unknown</option></select></div><div id="list" class="muted">Loading…</div></section>
 <p class="muted">Store locations are loaded from the researched branch directory. No map service is used. Product links open retailer websites. Availability can change and must be confirmed with the retailer.</p></main><script>
 let mode='stores',stores=[],products=[],history=[],inventory=[];function tab(m,b){mode=m;document.querySelectorAll('.tabs button').forEach(x=>x.classList.remove('active'));b.classList.add('active');draw()}
-async function load(){try{let [a,b,c,d,e]=await Promise.all(['/api/stores','/api/products','/api/history','/api/summary','/api/inventory'].map(x=>fetch(x).then(r=>r.json())));stores=a.stores||[];products=b.products||[];history=c.runs||[];inventory=e.inventory||[];document.getElementById('stores').textContent=stores.length;document.getElementById('products').textContent=products.length;document.getElementById('stock').textContent=inventory.filter(x=>x.status==='in_stock').length;document.getElementById('onlineStock').textContent=products.filter(x=>x.availability==='in_stock').length;document.getElementById('last').textContent=d.last_scan?new Date(d.last_scan).toLocaleString():'—';let opts=[...new Set([...stores,...products].map(x=>x.retailer))].sort();document.getElementById('retailer').innerHTML='<option value="">All retailers</option>'+opts.map(x=>'<option>'+esc(x)+'</option>').join('');draw()}catch(e){document.getElementById('list').textContent='Could not load dashboard data: '+e}}
+async function load(){try{let [a,b,c,d,e]=await Promise.all(['/api/stores','/api/products','/api/history','/api/summary','/api/inventory'].map(x=>fetch(x).then(r=>r.json())));stores=a.stores||[];products=b.products||[];history=c.runs||[];inventory=e.inventory||[];renderProgress();document.getElementById('stores').textContent=stores.length;document.getElementById('products').textContent=products.length;document.getElementById('stock').textContent=inventory.filter(x=>x.status==='in_stock').length;document.getElementById('onlineStock').textContent=products.filter(x=>x.availability==='in_stock').length;document.getElementById('last').textContent=d.last_scan?new Date(d.last_scan).toLocaleString():'—';let opts=[...new Set([...stores,...products].map(x=>x.retailer))].sort();document.getElementById('retailer').innerHTML='<option value="">All retailers</option>'+opts.map(x=>'<option>'+esc(x)+'</option>').join('');draw()}catch(e){document.getElementById('list').textContent='Could not load dashboard data: '+e}}
+function renderProgress(){let run=history.find(x=>x.status==='running')||history[0];let active=run&&run.status==='running';let pct=run?Number(run.progress||0):0;document.getElementById('progressFill').style.width=pct+'%';document.getElementById('progressPercent').textContent=pct+'%';document.getElementById('progressPhase').textContent=run?(run.phase|| (active?'Scan running':'Last scan')):'No scan running';document.getElementById('progressCount').textContent=run&&Number(run.total)>0?(Number(run.current||0)+' / '+Number(run.total)+' steps'):(active?'Working…':'Waiting for scan');document.getElementById('progressState').textContent=active?'In progress':run?run.status:'Idle';if(run&&run.status==='completed'){document.getElementById('progressFill').style.width='100%';document.getElementById('progressPercent').textContent='100%'}}
 function esc(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 function draw(){let q=document.getElementById('q').value.toLowerCase(),r=document.getElementById('retailer').value,a=document.getElementById('availability').value;let rows=mode==='stores'?[...stores].sort((a,b)=>Number(b.in_stock_products||0)-Number(a.in_stock_products||0)||Number(b.online_in_stock_products||0)-Number(a.online_in_stock_products||0)||Number(a.distance||0)-Number(b.distance||0)):mode==='products'?products:history;rows=rows.filter(x=>(!r||x.retailer===r)&&(!a||x.availability===a)&&JSON.stringify(x).toLowerCase().includes(q));document.getElementById('list').innerHTML=rows.length?rows.map(x=>mode==='stores'?'<div class="item"><div><b>'+esc(x.name)+'</b><div class="muted">'+esc(x.retailer)+' · '+esc(x.address||x.city||'Address not listed')+'</div><div class="muted">'+Number(x.distance).toFixed(1)+' miles from 22601 · <a href="'+esc(x.source_url)+'" target="_blank">Store page</a></div><div class="grid" style="grid-template-columns:repeat(2,minmax(0,1fr));margin:12px 0"><div class="stat"><b>'+(x.inventory_check_status==='checked'||x.inventory_check_status==='partial'?Number(x.in_stock_products||0):'—')+'</b><span class="muted">In-store products confirmed at this branch</span><div class="muted">'+esc(x.inventory_check_status==='unsupported'?'Branch check not supported':x.inventory_check_status==='error'?'Branch check failed':x.inventory_check_status==='checked'||x.inventory_check_status==='partial'?'Based on branch-specific checks':'Not checked')+'</div></div><div class="stat"><b>'+Number(x.online_in_stock_products||0)+'</b><span class="muted">Online products in stock</span><div class="muted">Retailer-wide · '+Number(x.online_listings||0)+' verified listings; not branch-specific</div></div></div><details><summary>Online inventory · '+Number(x.online_in_stock_products||0)+' in stock / '+Number(x.online_listings||0)+' total retailer listings</summary>'+((products.filter(p=>p.retailer===x.retailer&&p.availability==='in_stock').length)?products.filter(p=>p.retailer===x.retailer&&p.availability==='in_stock').map(p=>'<div class="muted"><a href="'+esc(p.url)+'" target="_blank">'+esc(p.title)+'</a> · '+esc(p.price||'Price not listed')+' · In stock online</div>').join(''):'<div class="muted">No verified online in-stock listings currently recorded for this retailer.</div>')+'</details><details><summary>View branch inventory</summary>'+((inventory.filter(y=>y.store_id===x.id).length)?inventory.filter(y=>y.store_id===x.id).map(y=>'<div class="muted">'+esc(y.product_title)+' — '+(y.status==='in_stock'?'In stock — '+esc(y.quantity_label):y.status==='out_of_stock'?'Out of stock':'Unknown')+' · '+esc(y.checked_at||'')+' · <a href="'+esc(y.source_url)+'" target="_blank">Retailer product page</a><div class="muted">'+esc(y.detail||'')+'</div></div>').join(''):'<div class="muted">No verified branch-specific product results. This does not mean the store is out of stock.</div>')+'</details></div><span class="pill">'+esc(x.inventory_check_time?'Checked '+new Date(x.inventory_check_time).toLocaleString():'Not checked')+'</span></div>':mode==='products'?'<div class="item"><div><b><a href="'+esc(x.url)+'" target="_blank">'+esc(x.title)+'</a></b><div class="muted">'+esc(x.retailer)+' · '+esc(x.price||'Price not listed')+' · '+esc(x.seller_name||'Seller not listed')+'</div><div class="muted">Checked '+esc(x.stock_checked_at||x.last_checked||'unknown')+'</div></div><span class="pill">'+(x.availability==='in_stock'?'In stock':x.availability==='out_of_stock'?'Out of stock':'Unknown')+'</span></div>':'<div class="item"><div><b>'+esc(x.kind)+' · '+esc(x.status)+'</b><div class="muted">'+esc(x.message)+'</div></div><span class="pill">'+esc(x.started_at)+'</span></div>').join(''):'<p class="muted">No matching records yet. Run a scan to populate this section.</p>'}
 async function scan(kind){let m=document.getElementById('msg');m.textContent='Starting scan…';try{let r=await fetch('/api/scan?kind='+kind,{method:'POST'}),d=await r.json();m.textContent=d.message||d.error||'Scan started';if(!r.ok)return;let tries=0;let timer=setInterval(async()=>{tries++;await load();let running=history.some(x=>x.status==='running');if(!running||tries>=180){clearInterval(timer);m.textContent=running?'Scan is still running; you can keep using the dashboard.':'Scan finished. '+(history[0]?.message||'Results refreshed.')}},4000)}catch(e){m.textContent='Scan failed: '+e}}
