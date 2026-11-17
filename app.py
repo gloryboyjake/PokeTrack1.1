@@ -552,7 +552,7 @@ def search_products(retailer, progress_callback=None):
     candidates_from_result=[]
     if result_link: candidates_from_result.append(result_link)
     # Some RSS entries expose retailer links in description anchors.
-    for raw in re.findall(r"href=['\\"]([^'\\"]+)['\\"]",result_desc,re.I):
+    for raw in re.findall(r"""href=['"]([^'"]+)['"]""",result_desc,re.I):
      candidates_from_result.append(raw)
     for raw in candidates_from_result:
      raw=unquote(raw.replace("&amp;","&"))
