@@ -380,6 +380,36 @@ def search_products(retailer):
      search_found.setdefault(u,title[:250])
   except (requests.RequestException,ET.ParseError) as e:
    log.warning("Bing RSS search unavailable for %s: %s",retailer,e)
+ if len(search_found)<10:
+  try:
+   q=f'site:{domain} Pokemon trading cards OR Pokemon TCG OR Pokemon booster OR Elite Trainer Box'
+   r=requests.get("https://www.bing.com/search",params={"q":q},headers=HEADERS,timeout=20)
+   r.raise_for_status()
+   soup=BeautifulSoup(r.text,"html.parser")
+   for a in soup.select("li.b_algo h2 a[href],a[href]"):
+    u=clean_url(a.get("href","")); title=a.get_text(" ",strip=True)
+    parent=a.parent.parent if a.parent else None
+    context=parent.get_text(" ",strip=True) if parent else ""
+    combined=(title+" "+context).strip()
+    if u and retailer_domain_match(u,domain) and is_pokemon_tcg_title(combined):
+     search_found.setdefault(u,(title or combined)[:250])
+  except requests.RequestException as e:
+   log.warning("Bing HTML search unavailable for %s: %s",retailer,e)
+ if len(search_found)<10:
+  try:
+   q=f'site:{domain} Pokemon trading cards OR Pokemon TCG OR Pokemon booster OR Elite Trainer Box'
+   r=requests.get("https://search.yahoo.com/search",params={"p":q},headers=HEADERS,timeout=20)
+   r.raise_for_status()
+   soup=BeautifulSoup(r.text,"html.parser")
+   for a in soup.select("a[href]"):
+    u=clean_url(a.get("href","")); title=a.get_text(" ",strip=True)
+    parent=a.parent.parent if a.parent else None
+    context=parent.get_text(" ",strip=True) if parent else ""
+    combined=(title+" "+context).strip()
+    if u and retailer_domain_match(u,domain) and is_pokemon_tcg_title(combined):
+     search_found.setdefault(u,(title or combined)[:250])
+  except requests.RequestException as e:
+   log.warning("Yahoo search unavailable for %s: %s",retailer,e)
  for u,title in search_found.items():
   found.setdefault(u,title)
  products=[]; c=conn()
