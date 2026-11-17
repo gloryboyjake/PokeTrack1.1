@@ -524,10 +524,8 @@ def search_products(retailer, progress_callback=None):
    log.warning("Retailer sitemap unavailable for %s (%s): %s",retailer,sitemap_url,e)
  if sitemap_product_count:
   log.info("%s: %s Pokémon URLs found in retailer-owned sitemaps",retailer,sitemap_product_count)
-  # Free, keyless Bing RSS discovery. This is a public search-results feed:
- # no account, API key, paid proxy, or third-party scraping service is used.
- # Search results only discover candidate retailer URLs; retailer pages below
- # remain the source of truth for product identity and availability.
+ # Free, keyless Bing RSS discovery. This public search-results feed requires no account or key.
+ # Results discover candidate URLs only; retailer pages remain the source of truth.
  search_terms=[
   "Pokemon TCG trading cards",
   "Pokemon Elite Trainer Box",
@@ -569,8 +567,6 @@ def search_products(retailer, progress_callback=None):
    log.info("%s: Bing RSS query %s found %s total candidate URLs",retailer,term_index,len(found))
   except (requests.RequestException,ET.ParseError) as e:
    log.warning("%s: free Bing RSS discovery query failed (%s): %s",retailer,term_index,str(e)[:180])
- # Public TrackaLacker listings add candidate retailer URLs; retailer pages still decide final stock.
- log.info("%s: using third-party tracker product names in retailer search",retailer)
  # Search-engine results supplement retailer catalog pages, sitemaps and curated seeds.
  products=[]; c=conn()
  priority=("30th","delta-reign","ascended-heroes","chaos-rising","pitch-black","prismatic","mega-evolution","151","charizard","booster-bundle","elite-trainer")
