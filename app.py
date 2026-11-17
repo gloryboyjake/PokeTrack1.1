@@ -502,8 +502,8 @@ def search_products(retailer, progress_callback=None):
     continue
    page_text=rendered.text or ""
    page_added=0
-   for match in re.finditer(r'\\[([^\\]\\n]{3,250})\\]\\((https?://[^)\\s]+)\\)',page_text):
-    title=re.sub(r"^\\d+†","",match.group(1)).strip()
+   for match in re.finditer(r'\[([^\]\n]{3,250})\]\((https?://[^)\s]+)\)',page_text):
+    title=re.sub(r"^\d+†","",match.group(1)).strip()
     url=match.group(2).rstrip(".,")
     before=len(found)
     add_candidate(url,title)
