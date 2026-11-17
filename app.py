@@ -23,6 +23,25 @@ ZIP=os.getenv("START_ZIP","22601")
 RADIUS=int(os.getenv("RADIUS_MILES","80"))
 UA=os.getenv("USER_AGENT","Mozilla/5.0 (compatible; PokeTrackRadar/1.0)")
 HEADERS={"User-Agent":UA,"Accept-Language":"en-US,en;q=0.9"}
+JINA_CALLS=0
+JINA_CALL_LIMIT=16
+JINA_LOCK=threading.Lock()
+def jina_read_url(target_url, timeout=18):
+ global JINA_CALLS
+ with JINA_LOCK:
+  if JINA_CALLS>=JINA_CALL_LIMIT: return None
+  JINA_CALLS+=1
+ try:
+  reader_url="https://r.jina.ai/"+target_url
+  response=requests.get(reader_url,headers={"Accept":"text/plain","User-Agent":"Mozilla/5.0"},timeout=timeout)
+  if not response.ok:
+   log.warning("Jina Reader returned HTTP %s for %s",response.status_code,target_url[:160])
+   return None
+  return response
+ except requests.RequestException as e:
+  log.warning("Jina Reader failed for %s: %s",target_url[:160],e)
+  return None
+
 def search_get(url, **kwargs):
  if browser_requests is not None:
   headers={k:v for k,v in {**HEADERS,**kwargs.pop("headers",{})}.items() if k.lower()!="user-agent"}
@@ -420,7 +439,21 @@ def search_products(retailer):
      if is_pokemon_tcg_title(combined): search_found.setdefault(u,(title or combined)[:250])
    except requests.RequestException as e:
     log.warning("Google Shopping discovery unavailable for %s: %s",retailer,e)
-  # Use three independent no-key search engines with short timeouts.
+  # If Google's direct endpoint is rate-limited, use Jina Reader's free no-key proxy.
+ if GOOGLE_RATE_LIMITED and len(search_found)<20:
+  try:
+   google_url=requests.Request("GET","https://www.google.com/search",params={"tbm":"shop","num":40,"q":q}).prepare().url
+   jr=jina_read_url(google_url,timeout=18)
+   if jr:
+    for match in re.finditer(r'https?://[^\s\]\)\>"]+',jr.text):
+     u=clean_url(match.group(0).rstrip(".,;"))
+     if not u or not retailer_domain_match(u,domain) or not retailer_product_url_is_valid(retailer,u): continue
+     context=jr.text[max(0,match.start()-220):min(len(jr.text),match.end()+220)]
+     if is_pokemon_tcg_title(context):
+      search_found.setdefault(u,context[:250])
+  except Exception as e:
+   log.warning("Jina Google Shopping fallback failed for %s: %s",retailer,e)
+ # Use three independent no-key search engines with short timeouts.
   for engine_url,param in (("https://www.bing.com/search","q"),("https://search.brave.com/search","q"),("https://www.startpage.com/sp/search","query")):
    try:
     r=search_get(engine_url,params={param:q},headers=HEADERS,timeout=8)
@@ -443,10 +476,15 @@ def search_products(retailer):
  def fetch_candidate(item):
   u,title=item
   try:
-   return item,retailer_get(u,headers=HEADERS,timeout=10)
+      page=retailer_get(u,headers=HEADERS,timeout=8)
+   if re.search(r"robot or human|captcha|verify you are human|access denied|unusual traffic",page.text[:30000],re.I):
+    reader_page=jina_read_url(u,timeout=18)
+    if reader_page: page=reader_page
+   return item,page
   except Exception as e:
    log.debug("Retailer product fetch failed for %s: %s",u,e)
-   return item,None
+   reader_page=jina_read_url(u,timeout=18)
+   return (item,reader_page) if reader_page else (item,None)
  with ThreadPoolExecutor(max_workers=6) as pool:
   fetched=list(pool.map(fetch_candidate,candidates))
  log.info("%s: checking %s priority retailer product pages from %s candidates",retailer,len(candidates),len(found))
@@ -579,6 +617,8 @@ def scan_store_inventory():
  c.close()
  return {"confirmed_products":confirmed,"message":f"Directly checked retailer product pages for {checked} branches; {confirmed} product/branch matches explicitly reported in stock. {errors} page requests failed. No search-engine snippets or guessed stock were used."}
 def run_scan(kind):
+ global JINA_CALLS
+ JINA_CALLS=0
  if not SCAN_LOCK.acquire(blocking=False):
   return {"status":"busy","message":"A scan is already running. Please wait for it to finish."},409
  try:
