@@ -478,9 +478,14 @@ def search_products(retailer):
  with ThreadPoolExecutor(max_workers=6) as pool:
   fetched=list(pool.map(fetch_candidate,candidates))
  log.info("%s: checking %s priority retailer product pages from %s candidates",retailer,len(candidates),len(found))
- for (u,title),page in fetched:
+ for (candidate_index,((u,title),page)) in enumerate(fetched,1):
   try:
-   if page is None or not page.ok: continue
+   if page is None:
+    log.info("%s candidate %s: request failed",retailer,candidate_index)
+    continue
+   if not page.ok:
+    log.info("%s candidate %s: retailer page HTTP %s",retailer,candidate_index,page.status_code)
+    continue
    ps=BeautifulSoup(page.text,"html.parser")
    page_text=ps.get_text(" ",strip=True)
    embedded=" ".join(x.get_text(" ",strip=True) for x in ps.select("script[type='application/ld+json'],script#__NEXT_DATA__,script[type='application/json']"))
@@ -496,10 +501,15 @@ def search_products(retailer):
     n=ps.select_one(sel)
     if n and n.get("content"): price=n["content"]; break
    else: price=None
-   if not is_pokemon_tcg_title(title): continue
+   if not is_pokemon_tcg_title(title):
+    log.info("%s candidate %s rejected: page title not a Pokémon TCG product (%s)",retailer,candidate_index,title[:100])
+    continue
    verified,seller=verify_retailer_seller(retailer,verification_text)
-   if not verified: continue
+   if not verified:
+    log.info("%s candidate %s rejected: seller not verified as retailer (%s)",retailer,candidate_index,title[:100])
+    continue
    stock=online_stock_status(page_text,embedded)
+   log.info("%s verified: %s | online=%s | price=%s",retailer,title[:100],stock,price)
    score,reason=popularity_for(title,verification_text)
    t=now()
    c.execute("""INSERT INTO products(retailer,title,url,price,availability,source,first_seen,last_seen,seller_verified,seller_name,popularity_score,popularity_reason,discovery_sources,stock_checked_at)
