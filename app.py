@@ -251,6 +251,43 @@ def search_products(retailer):
     except Exception: pass
   except requests.RequestException as e:
    log.warning("Direct catalog unavailable for %s: %s; using public search fallback",retailer,e)
+ # Retailer-owned XML sitemaps are a no-search-engine discovery path and
+ # can expose product URLs even when the site's search page is JS-rendered.
+ sitemap_queue=[]
+ try:
+  robots=requests.get("https://www."+domain+"/robots.txt",headers=HEADERS,timeout=12)
+  if robots.ok:
+   for line in robots.text.splitlines():
+    if line.lower().startswith("sitemap:"):
+     sitemap_queue.append(line.split(":",1)[1].strip())
+ except requests.RequestException as e:
+  log.warning("Robots.txt unavailable for %s: %s",retailer,e)
+ if not sitemap_queue: sitemap_queue=[f"https://www.{domain}/sitemap.xml"]
+ sitemap_seen=set()
+ sitemap_product_count=0
+ while sitemap_queue and len(sitemap_seen)<8 and sitemap_product_count<40:
+  sitemap_url=sitemap_queue.pop(0)
+  if sitemap_url in sitemap_seen: continue
+  sitemap_seen.add(sitemap_url)
+  try:
+   response=requests.get(sitemap_url,headers=HEADERS,timeout=12)
+   if not response.ok: continue
+   root=ET.fromstring(response.content)
+   locs=[(node.text or "").strip() for node in root.iter() if node.tag.lower().endswith("loc") and node.text]
+   if root.tag.lower().endswith("sitemapindex"):
+    preferred=[u for u in locs if any(term in u.lower() for term in ("product","catalog","item","pdp"))]
+    sitemap_queue.extend((preferred or locs)[:8])
+    continue
+   for product_url in locs:
+    if "pokemon" not in product_url.lower(): continue
+    if not retailer_domain_match(product_url,domain): continue
+    add_candidate(product_url,"Pokemon Trading Card Product")
+    sitemap_product_count+=1
+    if sitemap_product_count>=40: break
+  except (requests.RequestException,ET.ParseError) as e:
+   log.warning("Retailer sitemap unavailable for %s (%s): %s",retailer,sitemap_url,e)
+ if sitemap_product_count:
+  log.info("%s: %s Pokémon URLs found in retailer-owned sitemaps",retailer,sitemap_product_count)
  search_found={}
  # DuckDuckGo is queried first because the Railway shared IP is currently
  # rate-limited by Google. Only direct retailer-domain product URLs are kept.
@@ -336,7 +373,12 @@ def search_products(retailer):
    embedded=" ".join(x.get_text(" ",strip=True) for x in ps.select("script[type='application/ld+json'],script#__NEXT_DATA__,script[type='application/json']"))
    verification_text=(page_text+" "+embedded)[:500000]
    og=ps.find("meta",property="og:title")
-   if og and og.get("content"): title=og["content"][:250]
+   if og and og.get("content"):
+    title=og["content"][:250]
+   elif ps.title:
+    title=ps.title.get_text(" ",strip=True)[:250]
+   else:
+    title=""
    for sel in ['meta[property="product:price:amount"]','meta[itemprop="price"]']:
     n=ps.select_one(sel)
     if n and n.get("content"): price=n["content"]; break
