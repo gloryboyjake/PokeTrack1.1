@@ -123,7 +123,7 @@ def verify_retailer_seller(retailer, page_text):
  text=(page_text or "").lower()
  if retailer in ("Target","Walmart","Best Buy"):
   aliases={"Target":"target","Walmart":"walmart","Best Buy":"best buy"}
-  return (True,retailer) if re.search(r"(?:sold by|sold and shipped by)\\s*"+aliases[retailer],text) else (False,None)
+  return (True,retailer) if re.search(r"(?:sold by|sold and shipped by|sold & shipped by)\\s*"+aliases[retailer],text) else (False,None)
  if "marketplace seller" in text or "third-party seller" in text: return False,None
  return True,retailer
 def popularity_for(title, page_text):
@@ -164,7 +164,7 @@ def search_products(retailer):
   except Exception: pass
  products=[]; c=conn()
  for u,title in list(found.items())[:35]:
-  price=None; stock="unknown"; source="retailer catalog page"
+  price=None; stock="unknown"; source="retailer catalog page"; page_text=""
   try:
    page=requests.get(u,headers=HEADERS,timeout=18)
    if page.ok:
