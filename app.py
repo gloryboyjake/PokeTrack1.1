@@ -61,6 +61,44 @@ def retailer_get(url, **kwargs):
   except Exception as e:
    log.warning("Browser-impersonated request failed for %s; retrying standard HTTP: %s",host,e)
  return requests.get(url,**kwargs)
+
+def browser_get(url, timeout=25, store=None):
+ # Render the real retailer page in Chromium; do not spoof fingerprints or bypass
+ # access controls. If the retailer blocks automation, return the visible block page
+ # so the caller records UNKNOWN instead of manufacturing inventory.
+ try:
+  from playwright.sync_api import sync_playwright
+ except Exception as e:
+  raise RuntimeError("Playwright browser runtime is not installed: "+str(e))
+ with sync_playwright() as p:
+  browser=p.chromium.launch(headless=True,args=["--no-sandbox"])
+  context=browser.new_context(locale="en-US",timezone_id="America/New_York",viewport={"width":1365,"height":900})
+  page=context.new_page()
+  target_url=url
+  if store and "target.com" in (urlparse(url).hostname or ""):
+   from urllib.parse import urlencode, urlsplit, urlunsplit, parse_qsl
+   parts=urlsplit(url); query=dict(parse_qsl(parts.query)); query["preselect"]=str(store.get("store_number",""))
+   target_url=urlunsplit((parts.scheme,parts.netloc,parts.path,urlencode({k:v for k,v in query.items() if v}),parts.fragment))
+  response=page.goto(target_url,wait_until="domcontentloaded",timeout=timeout*1000)
+  try: page.wait_for_load_state("networkidle",timeout=min(8000,timeout*1000))
+  except Exception: pass
+  page.wait_for_timeout(1200)
+  # A small scroll triggers lazy-loaded product/availability content as in normal browsing.
+  page.evaluate("window.scrollTo(0, Math.min(document.body.scrollHeight, 700))")
+  page.wait_for_timeout(500)
+  html=page.content()
+  status=response.status if response else 200
+  final_url=page.url
+  browser.close()
+ class BrowserResponse:
+  ok=status<400
+  status_code=status
+  text=html
+  url=final_url
+  def raise_for_status(self):
+   if status>=400: raise requests.HTTPError(f"HTTP {status} for {final_url}")
+ return BrowserResponse()
+
 RETAILERS={
  "Target":["target.com"],"Walmart":["walmart.com"],"Best Buy":["bestbuy.com"],
 "Barnes & Noble":["barnesandnoble.com"],"Costco":["costco.com"],
@@ -329,7 +367,7 @@ def search_products(retailer):
    found.setdefault(seed_url,"Pokemon TCG Elite Trainer Box")
  if catalog:
   try:
-   r=retailer_get(catalog,headers=HEADERS,timeout=25)
+   r=browser_get(catalog,timeout=25)
    r.raise_for_status()
    soup=BeautifulSoup(r.text,"html.parser")
    for a in soup.select("a[href]"):
@@ -413,62 +451,8 @@ def search_products(retailer):
      search_found.setdefault(url,str(alert.get("title","Pokémon TCG product"))[:250])
   except (requests.RequestException,ValueError,KeyError,IndexError) as e:
    log.warning("BujusJuJus feed unavailable for %s: %s",retailer,e)
- # Skip external search engines when direct retailer catalog/sitemap discovery already found enough product URLs.
- if len(found) < 15:
-  # Build one product-focused query from retailer and independent tracker catalogs.
-  tracked_terms=list(dict.fromkeys(PRIORITY_PRODUCT_TERMS+restockr_product_terms()))[:8]
-  q=f'site:{domain} Pokémon TCG trading cards booster Elite Trainer Box OR '+ " OR ".join('"'+x+'"' for x in tracked_terms)
-  if not GOOGLE_RATE_LIMITED:
-   try:
-    r=search_get("https://www.google.com/search",params={"tbm":"shop","num":40,"q":q},headers=HEADERS,timeout=8)
-    if r.status_code==429:
-     GOOGLE_RATE_LIMITED=True
-     raise requests.HTTPError("Google rate limited this server (HTTP 429)")
-    r.raise_for_status()
-    if re.search(r"unusual traffic|not a robot|captcha|consent\.google\.com",r.text[:30000],re.I):
-     GOOGLE_RATE_LIMITED=True
-     raise requests.HTTPError("Google presented an automated-traffic or consent page")
-    soup=BeautifulSoup(r.text,"html.parser")
-    for a in soup.select("a[href]"):
-     u=clean_url(a.get("href",""))
-     if not u or not retailer_domain_match(u,domain): continue
-     title=a.get_text(" ",strip=True)
-     parent=a.parent
-     context=parent.get_text(" ",strip=True) if parent else ""
-     if len(context)<40 and parent and parent.parent: context=parent.parent.get_text(" ",strip=True)
-     combined=(title+" "+context).strip()
-     if is_pokemon_tcg_title(combined): search_found.setdefault(u,(title or combined)[:250])
-   except requests.RequestException as e:
-    log.warning("Google Shopping discovery unavailable for %s: %s",retailer,e)
-  # If Google's direct endpoint is rate-limited, use Jina Reader's free no-key proxy.
- if GOOGLE_RATE_LIMITED and len(search_found)<20 and retailer in ("Target","Walmart","Best Buy","Walgreens"):
-  try:
-   google_url=requests.Request("GET","https://www.google.com/search",params={"tbm":"shop","num":40,"q":q}).prepare().url
-   jr=jina_read_url(google_url,timeout=8)
-   if jr:
-    for match in re.finditer(r'https?://[^\s\]\)\>"]+',jr.text):
-     u=clean_url(match.group(0).rstrip(".,;"))
-     if not u or not retailer_domain_match(u,domain) or not retailer_product_url_is_valid(retailer,u): continue
-     context=jr.text[max(0,match.start()-220):min(len(jr.text),match.end()+220)]
-     if is_pokemon_tcg_title(context):
-      search_found.setdefault(u,context[:250])
-  except Exception as e:
-   log.warning("Jina Google Shopping fallback failed for %s: %s",retailer,e)
- # Use three independent no-key search engines with short timeouts.
- for engine_url,param in (("https://www.bing.com/search","q"),("https://search.brave.com/search","q")):
-  try:
-   r=search_get(engine_url,params={param:q},headers=HEADERS,timeout=5)
-   r.raise_for_status()
-   soup=BeautifulSoup(r.text,"html.parser")
-   for a in soup.select("a[href]"):
-    u=clean_url(a.get("href","")); title=a.get_text(" ",strip=True)
-    parent=a.parent.parent if a.parent else None
-    context=parent.get_text(" ",strip=True) if parent else ""
-    combined=(title+" "+context).strip()
-    if u and retailer_domain_match(u,domain) and is_pokemon_tcg_title(combined):
-     search_found.setdefault(u,(title or combined)[:250])
-  except requests.RequestException as e:
-   log.debug("Search fallback unavailable via %s for %s: %s",engine_url,retailer,e)
+ # No Google/Bing/Brave/Jina scraping. Product candidates come from retailer
+ # catalog pages, retailer-owned sitemaps, curated seeds and public restock feeds.
  for u,title in search_found.items():
   found.setdefault(u,title)
  products=[]; c=conn()
@@ -477,7 +461,7 @@ def search_products(retailer):
  def fetch_candidate(item):
   u,title=item
   try:
-   page=retailer_get(u,headers=HEADERS,timeout=8)
+   page=browser_get(u,timeout=18)
    if (not page.ok) or re.search(r"robot or human|captcha|verify you are human|access denied|unusual traffic",page.text[:30000],re.I):
     log.info("Using Jina Reader fallback for %s (HTTP %s)",u,page.status_code)
     reader_page=jina_read_url(u,timeout=8)
