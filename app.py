@@ -512,12 +512,42 @@ def search_products(retailer):
     title=heading.group(1).strip()[:250] if heading else ""
    else:
     title=""
-   for sel in ['meta[property="product:price:amount"]','meta[itemprop="price"]']:
-    n=ps.select_one(sel)
-    if n and n.get("content"): price=n["content"]; break
-   else: price=None
+   price=None
+   # Read the actual Product/Offer price from JSON-LD where retailers publish it.
+   def find_offer_price(obj):
+    if isinstance(obj,dict):
+     offers=obj.get("offers")
+     if isinstance(offers,dict):
+      val=offers.get("price") or offers.get("lowPrice")
+      if val is not None: return str(val)
+     if isinstance(offers,list):
+      for offer in offers:
+       if isinstance(offer,dict) and (offer.get("price") or offer.get("lowPrice")) is not None:
+        return str(offer.get("price") or offer.get("lowPrice"))
+     for value in obj.values():
+      found_price=find_offer_price(value)
+      if found_price: return found_price
+    elif isinstance(obj,list):
+     for value in obj:
+      found_price=find_offer_price(value)
+      if found_price: return found_price
+    return None
+   for node in ps.select('script[type="application/ld+json"]'):
+    try:
+     structured=json.loads(node.string or node.get_text())
+     price=find_offer_price(structured)
+     if price: break
+    except Exception: pass
    if not price:
-    price_match=re.search(r"\$\s*(\d{1,4}(?:,\d{3})*(?:\.\d{2})?)",page_text)
+    for sel in ['meta[property="product:price:amount"]','meta[property="og:price:amount"]','meta[itemprop="price"]']:
+     n=ps.select_one(sel)
+     if n and n.get("content"):
+      price=n["content"].strip()
+      if re.fullmatch(r"\\d+(?:\\.\\d{1,2})?",price): break
+      price=None
+   if not price:
+    price_match=re.search(r"(?:Price|Our price|Now)\\s*:?\\s*\\$\\s*(\\d{1,4}(?:,\\d{3})*(?:\\.\\d{2})?)",page_text,re.I)
+    if not price_match: price_match=re.search(r"\\$\\s*(\\d{1,4}(?:,\\d{3})*\\.\\d{2})",page_text)
     if price_match: price=price_match.group(1).replace(",","")
    if not is_pokemon_tcg_title(title):
     log.info("%s candidate %s rejected: page title not a Pokémon TCG product (%s)",retailer,candidate_index,title[:100])
