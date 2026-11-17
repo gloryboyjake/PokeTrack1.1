@@ -2,6 +2,10 @@ import os, re, json, math, time, sqlite3, logging, threading
 from datetime import datetime, timezone
 from urllib.parse import urlparse, urlunparse, parse_qs, unquote
 import requests
+try:
+ from curl_cffi import requests as browser_requests
+except Exception:
+ browser_requests=None
 import xml.etree.ElementTree as ET
 from bs4 import BeautifulSoup
 from flask import Flask, jsonify, request, render_template_string
@@ -18,6 +22,16 @@ ZIP=os.getenv("START_ZIP","22601")
 RADIUS=int(os.getenv("RADIUS_MILES","80"))
 UA=os.getenv("USER_AGENT","Mozilla/5.0 (compatible; PokeTrackRadar/1.0)")
 HEADERS={"User-Agent":UA,"Accept-Language":"en-US,en;q=0.9"}
+def retailer_get(url, **kwargs):
+ host=(urlparse(url).hostname or "").lower()
+ protected=("target.com","walmart.com","barnesandnoble.com","bestbuy.com","samsclub.com","costco.com")
+ if browser_requests is not None and any(host==d or host.endswith("."+d) for d in protected):
+  headers={**HEADERS,**kwargs.pop("headers",{})}
+  try:
+   return browser_requests.get(url,headers=headers,impersonate="chrome151",**kwargs)
+  except Exception as e:
+   log.warning("Browser-impersonated request failed for %s; retrying standard HTTP: %s",host,e)
+ return requests.get(url,**kwargs)
 RETAILERS={
  "Target":["target.com"],"Walmart":["walmart.com"],"Best Buy":["bestbuy.com"],
 "Barnes & Noble":["barnesandnoble.com"],"Costco":["costco.com"],
@@ -169,8 +183,10 @@ def online_stock_status(page_text, embedded_text=""):
  if re.search(r"captcha|robot or human|access denied|verify you are human",text[:12000]): return "unknown"
  if re.search(r'"availability"\s*:\s*"[^"]*(?:OutOfStock|SoldOut)',text): return "out_of_stock"
  if re.search(r'"availability"\s*:\s*"[^"]*(?:InStock|LimitedAvailability)',text): return "in_stock"
+ if re.search(r'"availability_status"\s*:\s*"out_of_stock"|"availabilityStatus"\s*:\s*"out_of_stock"',text): return "out_of_stock"
+ if re.search(r'"availability_status"\s*:\s*"in_stock"|"availabilityStatus"\s*:\s*"in_stock"',text): return "in_stock"
  if re.search(r"out of stock|sold out|currently unavailable|not available online",text): return "out_of_stock"
- if re.search(r"add to cart|available to ship|in stock online|available online|ready to ship",text) and not re.search(r"aria-disabled=\"true\"|button[^>]*disabled",text): return "in_stock"
+ if re.search(r"add to cart|available to ship|in stock online|available online|ready to ship",text) and not re.search(r'aria-disabled="true"|button[^>]*disabled',text): return "in_stock"
  return "unknown"
 
 RESTOCKR_TERMS_CACHE=[]
@@ -255,7 +271,7 @@ def search_products(retailer):
   found.setdefault(u,title[:250])
  if catalog:
   try:
-   r=requests.get(catalog,headers=HEADERS,timeout=25)
+   r=retailer_get(catalog,headers=HEADERS,timeout=25)
    r.raise_for_status()
    soup=BeautifulSoup(r.text,"html.parser")
    for a in soup.select("a[href]"):
@@ -287,7 +303,7 @@ def search_products(retailer):
  # can expose product URLs even when the site's search page is JS-rendered.
  sitemap_queue=[]
  try:
-  robots=requests.get("https://www."+domain+"/robots.txt",headers=HEADERS,timeout=12)
+  robots=retailer_get("https://www."+domain+"/robots.txt",headers=HEADERS,timeout=12)
   if robots.ok:
    for line in robots.text.splitlines():
     if line.lower().startswith("sitemap:"):
@@ -302,7 +318,7 @@ def search_products(retailer):
   if sitemap_url in sitemap_seen: continue
   sitemap_seen.add(sitemap_url)
   try:
-   response=requests.get(sitemap_url,headers=HEADERS,timeout=12)
+   response=retailer_get(sitemap_url,headers=HEADERS,timeout=12)
    if not response.ok: continue
    root=ET.fromstring(response.content)
    locs=[(node.text or "").strip() for node in root.iter() if node.tag.lower().endswith("loc") and node.text]
@@ -467,7 +483,7 @@ def search_products(retailer):
  products=[]; c=conn()
  for u,title in list(found.items())[:50]:
   try:
-   page=requests.get(u,headers=HEADERS,timeout=18)
+   page=retailer_get(u,headers=HEADERS,timeout=18)
    if not page.ok: continue
    ps=BeautifulSoup(page.text,"html.parser")
    page_text=ps.get_text(" ",strip=True)
@@ -551,7 +567,7 @@ def scan_store_inventory():
    continue
   for product in candidates[:35]:
    try:
-    response=requests.get(product["url"],headers=HEADERS,timeout=18)
+    response=retailer_get(product["url"],headers=HEADERS,timeout=18)
     if not response.ok: continue
     page=BeautifulSoup(response.text,"html.parser")
     page_text=page.get_text(" ",strip=True)
