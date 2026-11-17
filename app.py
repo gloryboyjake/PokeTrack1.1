@@ -667,6 +667,9 @@ def scan_store_inventory(progress_callback=None):
    finally:
     work_done+=1
     if progress_callback: progress_callback(work_done,work_total,f"Checking {store.get('name','Target branch')} — {product.get('title','product')}")
+  if not products:
+   work_done+=1
+   if progress_callback: progress_callback(work_done,work_total,f"No product pages available for {store.get('name','Target branch')}")
   if branch_rows:
    c.execute("DELETE FROM store_inventory WHERE store_id=?",(store["id"],))
   for url,title,status,quantity,evidence in branch_rows:
