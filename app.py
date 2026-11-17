@@ -454,20 +454,20 @@ def search_products(retailer):
   except Exception as e:
    log.warning("Jina Google Shopping fallback failed for %s: %s",retailer,e)
  # Use three independent no-key search engines with short timeouts.
-  for engine_url,param in (("https://www.bing.com/search","q"),("https://search.brave.com/search","q"),("https://www.startpage.com/sp/search","query")):
-   try:
-    r=search_get(engine_url,params={param:q},headers=HEADERS,timeout=8)
-    r.raise_for_status()
-    soup=BeautifulSoup(r.text,"html.parser")
-    for a in soup.select("a[href]"):
-     u=clean_url(a.get("href","")); title=a.get_text(" ",strip=True)
-     parent=a.parent.parent if a.parent else None
-     context=parent.get_text(" ",strip=True) if parent else ""
-     combined=(title+" "+context).strip()
-     if u and retailer_domain_match(u,domain) and is_pokemon_tcg_title(combined):
-      search_found.setdefault(u,(title or combined)[:250])
-   except requests.RequestException as e:
-    log.debug("Search fallback unavailable via %s for %s: %s",engine_url,retailer,e)
+ for engine_url,param in (("https://www.bing.com/search","q"),("https://search.brave.com/search","q"),("https://www.startpage.com/sp/search","query")):
+  try:
+   r=search_get(engine_url,params={param:q},headers=HEADERS,timeout=8)
+   r.raise_for_status()
+   soup=BeautifulSoup(r.text,"html.parser")
+   for a in soup.select("a[href]"):
+    u=clean_url(a.get("href","")); title=a.get_text(" ",strip=True)
+    parent=a.parent.parent if a.parent else None
+    context=parent.get_text(" ",strip=True) if parent else ""
+    combined=(title+" "+context).strip()
+    if u and retailer_domain_match(u,domain) and is_pokemon_tcg_title(combined):
+     search_found.setdefault(u,(title or combined)[:250])
+  except requests.RequestException as e:
+   log.debug("Search fallback unavailable via %s for %s: %s",engine_url,retailer,e)
  for u,title in search_found.items():
   found.setdefault(u,title)
  products=[]; c=conn()
