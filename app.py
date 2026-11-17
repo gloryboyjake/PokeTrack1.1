@@ -199,7 +199,7 @@ def retailer_domain_match(url,domain):
 def online_stock_status(page_text, embedded_text="", retailer=None):
  text=((page_text or "")+" "+(embedded_text or "")).lower()
  if re.search(r"captcha|robot or human|access denied|verify you are human|unusual traffic",text[:30000]): return "unknown"
- if re.search(r'aria-disabled="true"|button[^>]*disabled|data-testid="loading"',text): return "unknown"
+ if re.search(r'aria-disabled="true"[^>]*>.*?add to cart|<button[^>]*disabled[^>]*>.*?add to cart|add to cart.{0,200}(?:disabled|aria-disabled="true")',text,re.S): return "unknown"
  if re.search(r'"availability"\s*:\s*"[^"]*(?:OutOfStock|SoldOut)',text): return "out_of_stock"
  if re.search(r'"availability"\s*:\s*"[^"]*(?:InStock|LimitedAvailability)',text):
   if retailer=="Target" and not re.search(r"add to cart|pickup today|available for pickup|available for shipping|ship it",text):
