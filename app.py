@@ -172,15 +172,19 @@ def is_pokemon_tcg_title(title):
  return bool(re.search(r'trading card|tcg|booster|elite trainer|etb|collection box|blister|tin|deck|card pack|card game',title))
 def verify_retailer_seller(retailer, page_text):
  text=(page_text or "").lower()
- if retailer in ("Target","Walmart","Best Buy"):
-  aliases={"Target":"target","Walmart":"walmart","Best Buy":"best buy"}
-  alias=aliases[retailer]
-  explicit=re.search(r"(?:sold by|sold and shipped by|sold & shipped by)\s*[:\-]?\s*"+re.escape(alias),text)
-  json_seller=re.search(r'"(?:sellername|seller_name|merchantname|merchant_name)"\s*:\s*"' + re.escape(alias) + r'(?:\.com)?"',text)
-  if explicit or json_seller: return True,retailer
+ aliases={"Target":("target",),"Walmart":("walmart",),"Best Buy":("best buy","bestbuy")}
+ sellers=re.findall(r'"seller"\s*:\s*\{[^{}]*?"name"\s*:\s*"([^"]+)"',text,re.I)
+ sellers+=re.findall(r'sold\s*(?:and|&)\s*shipped\s*by\s+([a-z0-9 .&-]{2,60})',text,re.I)
+ sellers+=re.findall(r'sold by\s+([a-z0-9 .&-]{2,60})',text,re.I)
+ sellers=[re.sub(r"\s+"," ",x).strip(" .,:;") for x in sellers]
+ if sellers:
+  expected=aliases.get(retailer,(retailer.lower(),))
+  if any(any(alias in name.lower() for alias in expected) for name in sellers):
+   return True,retailer
   return False,None
- if re.search(r"marketplace seller|third.party seller|sold by a third party|sold by marketplace",text): return False,None
- return True,retailer
+ if re.search(r"more options from marketplace sellers|marketplace only|third.party seller|sold by a third party",text):
+  return False,None
+ return True,"retailer offer (seller not separately named)"
 
 def popularity_for(title, page_text):
  t=(title or "").lower(); body=(page_text or "").lower(); score=0; reason=[]
@@ -192,15 +196,21 @@ def retailer_domain_match(url,domain):
  host=(urlparse(url).hostname or "").lower()
  domain=(domain or "").lower()
  return host==domain or host.endswith("."+domain)
-def online_stock_status(page_text, embedded_text=""):
+def online_stock_status(page_text, embedded_text="", retailer=None):
  text=((page_text or "")+" "+(embedded_text or "")).lower()
- if re.search(r"captcha|robot or human|access denied|verify you are human",text[:12000]): return "unknown"
+ if re.search(r"captcha|robot or human|access denied|verify you are human|unusual traffic",text[:30000]): return "unknown"
+ if re.search(r'aria-disabled="true"|button[^>]*disabled|data-testid="loading"',text): return "unknown"
  if re.search(r'"availability"\s*:\s*"[^"]*(?:OutOfStock|SoldOut)',text): return "out_of_stock"
- if re.search(r'"availability"\s*:\s*"[^"]*(?:InStock|LimitedAvailability)',text): return "in_stock"
+ if re.search(r'"availability"\s*:\s*"[^"]*(?:InStock|LimitedAvailability)',text):
+  if retailer=="Target" and not re.search(r"add to cart|pickup today|available for pickup|available for shipping|ship it",text):
+   return "unknown"
+  return "in_stock"
  if re.search(r'"availability_status"\s*:\s*"out_of_stock"|"availabilityStatus"\s*:\s*"out_of_stock"',text): return "out_of_stock"
  if re.search(r'"availability_status"\s*:\s*"in_stock"|"availabilityStatus"\s*:\s*"in_stock"',text): return "in_stock"
  if re.search(r"out of stock|sold out|currently unavailable|not available online",text): return "out_of_stock"
- if re.search(r"add to cart|available to ship|in stock online|available online|ready to ship",text) and not re.search(r'aria-disabled="true"|button[^>]*disabled',text): return "in_stock"
+ if re.search(r"add to cart|available to ship|in stock online|available online|ready to ship|available for pickup",text):
+  if retailer=="Target" and re.search(r"loading|placeholder|disabled",text): return "unknown"
+  return "in_stock"
  return "unknown"
 
 RESTOCKR_TERMS_CACHE=[]
@@ -288,6 +298,19 @@ def tracker_candidates(retailer):
  TRACKER_CANDIDATES_CACHE_AT=time.time()
  return by_retailer.get(retailer,{})
 
+SEED_PRODUCT_URLS={
+ "Target":["https://www.target.com/p/-/A-1010892076","https://www.target.com/p/-/A-1011483406"],
+ "Walmart":["https://www.walmart.com/ip/15718673510","https://www.walmart.com/ip/20161351456","https://www.walmart.com/ip/20754418655","https://business.walmart.com/ip/POKEMON-SV10-DESTINED-RIVALS-D7-ELITE-TRAINER-BOX/19965460207"],
+ "Best Buy":[
+  "https://www.bestbuy.com/product/pokemon-trading-card-game-30th-celebration-elite-trainer-box/JJG2TL8XCJ",
+  "https://www.bestbuy.com/product/pokemon-trading-card-game-mega-evolution-pitch-black-elite-trainer-box/JJG2TL8J45",
+  "https://www.bestbuy.com/product/pokemon-trading-card-game-mega-evolution-chaos-rising-elite-trainer-box/JJG2TL34RT",
+  "https://www.bestbuy.com/product/pokemon-trading-card-game-mega-evolution-delta-reign-elite-trainer-box/JJG2TL8QGY",
+  "https://www.bestbuy.com/product/pokemon-trading-card-game-mega-evolution-perfect-order-elite-trainer-box/JJG2TL3W86",
+  "https://www.bestbuy.com/product/pokemon-trading-card-game-30th-celebration-ultra-premium-collection-day-or-night-1-ultra-premium-collection-per-order-styles-may-vary/JJG2TL8254"
+ ]
+}
+
 def search_products(retailer):
  global GOOGLE_RATE_LIMITED
  catalog=direct_catalog_url(retailer)
@@ -299,6 +322,8 @@ def search_products(retailer):
   if not u or not retailer_domain_match(u,domain): return
   if not title or not is_pokemon_tcg_title(title): return
   found.setdefault(u,title[:250])
+ for seed in SEED_PRODUCT_URLS.get(retailer,[]):
+  add_candidate(seed,"Pokémon TCG Elite Trainer Box")
  if catalog:
   try:
    r=retailer_get(catalog,headers=HEADERS,timeout=25)
@@ -475,7 +500,7 @@ def search_products(retailer):
    if not verified:
     log.info("%s candidate %s rejected: seller not verified as retailer (%s)",retailer,candidate_index,title[:100])
     continue
-   stock=online_stock_status(page_text,embedded)
+   stock=online_stock_status(page_text,embedded+" "+page.text,retailer)
    log.info("%s verified: %s | online=%s | price=%s",retailer,title[:100],stock,price)
    score,reason=popularity_for(title,verification_text)
    t=now()
