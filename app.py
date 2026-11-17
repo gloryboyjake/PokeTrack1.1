@@ -114,6 +114,7 @@ def discover_stores():
 def clean_url(u):
  u=unquote(u or "")
  if u.startswith("/url?"): u=parse_qs(urlparse(u).query).get("q",[""])[0]
+ if "duckduckgo.com/l/" in u: u=parse_qs(urlparse(u).query).get("uddg",[u])[0]
  p=urlparse(u)
  if p.hostname and ("google." in p.hostname or p.hostname.endswith(".google.com")):
   params=parse_qs(p.query)
@@ -149,7 +150,7 @@ def verify_retailer_seller(retailer, page_text):
  text=(page_text or "").lower()
  if retailer in ("Target","Walmart","Best Buy"):
   aliases={"Target":"target","Walmart":"walmart","Best Buy":"best buy"}
-  return (True,retailer) if re.search(r"(?:sold by|sold and shipped by|sold & shipped by)\\s*"+aliases[retailer],text) else (False,None)
+  return (True,retailer) if re.search(r"(?:sold by|sold and shipped by|sold & shipped by)\s*[:\\-]?\s*"+re.escape(aliases[retailer])+r"\\b",text) else (False,None)
  if "marketplace seller" in text or "third-party seller" in text: return False,None
  return True,retailer
 def popularity_for(title, page_text):
@@ -234,6 +235,21 @@ def search_products(retailer):
   except requests.RequestException as e:
    log.warning("Google %s search unavailable for %s: %s",mode,retailer,e)
    if google_blocked: break
+ # DuckDuckGo HTML search is a free, no-key fallback when Google blocks the server.
+ if len(search_found)<10:
+  try:
+   q=f"site:{domain} Pokemon trading cards OR Pokemon TCG OR Pokemon booster OR Elite Trainer Box"
+   r=requests.get("https://html.duckduckgo.com/html/",params={"q":q},headers=HEADERS,timeout=20)
+   r.raise_for_status()
+   soup=BeautifulSoup(r.text,"html.parser")
+   for a in soup.select("a.result__a, a.result-link, a[href]"):
+    u=clean_url(a.get("href","")); title=a.get_text(" ",strip=True)
+    parent=a.parent; context=parent.get_text(" ",strip=True) if parent else ""
+    combined=(title+" "+context).strip()
+    if u and retailer_domain_match(u,domain) and is_pokemon_tcg_title(combined):
+     search_found.setdefault(u,(title or combined)[:250])
+  except requests.RequestException as e:
+   log.warning("DuckDuckGo search unavailable for %s: %s",retailer,e)
  if len(search_found)<10:
   try:
    q=f'site:{domain} Pokemon trading cards OR Pokemon TCG OR Pokemon booster OR Elite Trainer Box'
