@@ -67,8 +67,7 @@ BROWSER_MANAGER=None
 BROWSER_INSTANCE=None
 BROWSER_CONTEXT=None
 def browser_get(url, timeout=25, store=None):
- # Reuse one genuine Chromium session for the scan; navigate actual retailer pages
- # and use visible store controls. No fingerprint spoofing or access-control bypass.
+ # Reuse one real Chromium session. Store selection uses visible retailer controls only.
  global BROWSER_MANAGER,BROWSER_INSTANCE,BROWSER_CONTEXT
  from playwright.sync_api import sync_playwright
  from types import SimpleNamespace
@@ -80,35 +79,85 @@ def browser_get(url, timeout=25, store=None):
   page=BROWSER_CONTEXT.new_page()
   try:
    response=page.goto(url,wait_until="domcontentloaded",timeout=timeout*1000)
-   try: page.wait_for_load_state("networkidle",timeout=min(7000,timeout*1000))
+   try: page.wait_for_load_state("networkidle",timeout=min(6000,timeout*1000))
    except Exception: pass
-   if store and "target.com" in (urlparse(url).hostname or ""):
-    try:
-     for label in ("Change store","Choose store","Edit store","My store"):
-      locator=page.get_by_text(label,exact=False).first
-      if locator.count():
-       locator.click(timeout=1500); page.wait_for_timeout(600); break
-     fields=page.locator("input:visible")
-     for idx in range(min(fields.count(),8)):
-      field=fields.nth(idx)
-      hint=((field.get_attribute("placeholder") or "")+" "+(field.get_attribute("aria-label") or "")).lower()
-      if any(x in hint for x in ("zip","city","state","location","store")):
-       field.fill(str(store.get("postcode") or store.get("city") or "")); page.wait_for_timeout(1000)
-       target_label=store.get("name") or store.get("city") or ""
-       option=page.get_by_text(target_label,exact=False).last
-       if option.count(): option.click(timeout=1800); page.wait_for_timeout(600)
-       for action in ("Save","Use this store","Select store","Set as my store","Confirm"):
-        btn=page.get_by_role("button",name=re.compile(action,re.I)).first
-        if btn.count():
-         btn.click(timeout=1400); page.wait_for_timeout(900); break
+   store_confirmed=False
+   if store:
+    retailer=str(store.get("retailer") or "")
+    # Each retailer exposes slightly different wording for its store/pickup selector.
+    labels={
+     "Target":("Change store","Choose store","Edit store","My store"),
+     "Walmart":("How do you want your items?","Pickup or delivery","Change store","Choose a store"),
+     "Best Buy":("My store","Change store","Choose a store","Pickup"),
+     "Barnes & Noble":("Choose a store","Select store","Find a store","Change store"),
+     "Costco":("Choose warehouse","Change warehouse","Select warehouse","My warehouse"),
+     "Sam's Club":("Choose club","Change club","Select club","My club"),
+     "Walgreens":("Set store","Change store","Find a store","Pickup"),
+     "Dollar General":("Set store","Choose store","Find a store","Pickup"),
+     "Hobby Lobby":("Find a store","Choose store","Change store"),
+     "Books-A-Million":("Choose a store","Find a store","Change store"),
+     "Gabe's":("Find a store","Store locator","Choose store")
+    }.get(retailer,("Change store","Choose store","Select store","Find a store","My store"))
+    selector_open=False
+    for label in labels:
+     try:
+      loc=page.get_by_text(label,exact=False).first
+      if loc.count() and loc.is_visible():
+       loc.click(timeout=1800)
+       page.wait_for_timeout(650)
+       selector_open=True
        break
-    except Exception as e:
-     log.info("Visible store selection not completed for %s: %s",store.get("name"),str(e)[:120])
-   page.wait_for_timeout(700)
+     except Exception: pass
+    if selector_open:
+     fields=page.locator("input:visible")
+     for idx in range(min(fields.count(),12)):
+      field=fields.nth(idx)
+      try:
+       hint=" ".join([field.get_attribute("placeholder") or "",field.get_attribute("aria-label") or "",field.get_attribute("name") or ""]).lower()
+       if not any(x in hint for x in ("zip","postal","location","store","club","warehouse","city")):
+        continue
+       field.fill(str(store.get("postcode") or store.get("city") or ""),timeout=1800)
+       try: field.press("Enter",timeout=1200)
+       except Exception: pass
+       page.wait_for_timeout(1100)
+       break
+      except Exception: continue
+     # Click only a result that identifies this branch, not a generic nearby-store result.
+     city=str(store.get("city") or "").strip().lower()
+     postcode=str(store.get("postcode") or "").strip()
+     branch_name=str(store.get("name") or "").strip().lower()
+     candidates=page.locator("body *:visible")
+     for idx in range(min(candidates.count(),500)):
+      item=candidates.nth(idx)
+      try:
+       label=item.inner_text(timeout=300)
+       low=label.lower()
+       exact_branch=(postcode and postcode in label and city and city in low) or (branch_name and len(branch_name)>5 and branch_name in low)
+       if exact_branch and len(label)<500:
+        item.click(timeout=1500)
+        page.wait_for_timeout(500)
+        break
+      except Exception: continue
+     for action in ("Save","Use this store","Select store","Set as my store","Confirm","Choose this store","Use this location"):
+      try:
+       btn=page.get_by_role("button",name=re.compile(action,re.I)).first
+       if btn.count() and btn.is_visible():
+        btn.click(timeout=1500)
+        page.wait_for_timeout(800)
+        break
+      except Exception: pass
+    page.wait_for_timeout(500)
+    try:
+     visible_text=page.locator("body").inner_text(timeout=2500)
+     store_confirmed=branch_matches_page(store,visible_text)
+    except Exception: store_confirmed=False
+   page.wait_for_timeout(450)
    page.evaluate("window.scrollTo(0, Math.min(document.body.scrollHeight, 800))")
-   page.wait_for_timeout(350)
-   html=page.content(); status=response.status if response else 200; final_url=page.url
-   return SimpleNamespace(ok=status<400,status_code=status,text=html,url=final_url,raise_for_status=lambda: (_ for _ in ()).throw(requests.HTTPError(f"HTTP {status} for {final_url}")) if status>=400 else None)
+   page.wait_for_timeout(250)
+   html=page.content()
+   status=response.status if response else 200
+   final_url=page.url
+   return SimpleNamespace(ok=status<400,status_code=status,text=html,url=final_url,store_confirmed=store_confirmed,raise_for_status=lambda: (_ for _ in ()).throw(requests.HTTPError("HTTP "+str(status)+" for "+final_url)) if status>=400 else None)
   finally:
    page.close()
 
@@ -615,63 +664,65 @@ def branch_matches_page(store, page_text):
  return False
 def inventory_status_from_product_page(page_text):
  text=(page_text or "").lower()
- # Do not interpret shipping, delivery, or generic Add to Cart as local store stock.
- if re.search(r'not available at this store|not sold at your store|out of stock at this store|unavailable for pickup at this store',text):
-  return "out_of_stock",None,"Out of stock"
- if re.search(r'in stock at this store|available for pickup at this store|pickup available at this store|in stock at \w[\w -]{0,45}store',text):
+ # Only explicit local-store or pickup wording counts. Shipping and generic Add to Cart do not.
+ if re.search(r'not available at this store|not sold at your store|out of stock at this store|unavailable for pickup at this store|pickup unavailable|not available for pickup|sold out at this location',text):
+  return "out_of_stock",None,"Pickup unavailable"
+ if re.search(r'available for pickup|pickup available|ready for pickup|pick up today|pickup today|in-store pickup available|in stock at this store|available at this store|available at this location',text):
   m=re.search(r'(?:only\s*)?(\d+)\s*(?:left|available|in stock)',text)
   qty=int(m.group(1)) if m else None
-  return "in_stock",qty,(str(qty) if qty is not None else "count unavailable")
- return "unknown",None,"count unavailable"
+  return "in_stock",qty,(str(qty) if qty is not None else "pickup available; count unavailable")
+ return "unknown",None,"No explicit local pickup status"
 def scan_store_inventory():
  c=conn()
  stores=[dict(x) for x in c.execute("SELECT * FROM stores ORDER BY retailer,distance")]
- products=[dict(x) for x in c.execute("SELECT * FROM products WHERE seller_verified=1 ORDER BY popularity_score DESC,last_seen DESC LIMIT 30")]
- checked=0; confirmed=0; unknown=0; errors=0; unsupported=0
+ checked=0; confirmed=0; unknown=0; errors=0; products_checked=0
  for store in stores:
-  if store["retailer"]!="Target":
-   unsupported+=1
-   detail="This retailer does not expose a supported branch-level stock source yet; online listings are not counted as local stock."
-   c.execute("INSERT INTO store_inventory_checks(store_id,status,checked_at,detail) VALUES(?,?,?,?) ON CONFLICT(store_id) DO UPDATE SET status=excluded.status,checked_at=excluded.checked_at,detail=excluded.detail",(store["id"],"unsupported",now(),detail))
-   c.commit(); continue
-  branch_rows=[]; failures=0
+  # Keep each branch matched only to products sold by that same retailer.
+  products=[dict(x) for x in c.execute("SELECT * FROM products WHERE retailer=? AND seller_verified=1 ORDER BY popularity_score DESC,last_seen DESC LIMIT 30",(store["retailer"],))]
+  if not products:
+   detail="No verified retailer-owned Pokémon TCG product pages are available for this retailer yet."
+   c.execute("INSERT INTO store_inventory_checks(store_id,status,checked_at,detail) VALUES(?,?,?,?) ON CONFLICT(store_id) DO UPDATE SET status=excluded.status,checked_at=excluded.checked_at,detail=excluded.detail",(store["id"],"no_products",now(),detail))
+   c.commit()
+   continue
+  branch_rows=[]; failures=0; branch_confirmed=0
   for product in products:
    try:
-    page=browser_get(product["url"],timeout=25,store=store)
-    if not page.ok: raise requests.HTTPError(f"Retailer page HTTP {page.status_code}")
+    page=browser_get(product["url"],timeout=22,store=store)
+    if not page.ok: raise requests.HTTPError("Retailer page HTTP "+str(page.status_code))
     soup=BeautifulSoup(page.text,"html.parser")
-    visible=re.sub(r"\\s+"," ",soup.get_text(" ",strip=True)).lower()
-    street=(store.get("address") or "").split(",")[0].lower()
-    street_token=street.split()[0] if street else ""
-    branch_name=(store.get("name") or "").lower()
-    zip_code=str(store.get("postcode") or "")
-    branch_context=(branch_name and branch_name in visible) or (street_token and street_token in visible and zip_code and zip_code in visible)
-    status,quantity,label=branch_stock_status(visible)
+    visible=re.sub(r"\s+"," ",soup.get_text(" ",strip=True)).lower()
+    branch_context=bool(getattr(page,"store_confirmed",False)) and branch_matches_page(store,visible)
+    status,quantity,label=inventory_status_from_product_page(visible)
     if not branch_context:
      status="unknown"; quantity=None
-     evidence="Rendered product page did not visibly confirm this exact branch; stock left unknown"
+     evidence="The exact branch could not be verified as the selected store; local pickup status left unknown."
+    elif status=="unknown":
+     evidence="Exact branch context was visible, but the page did not expose an explicit pickup status."
     else:
-     evidence=f"Rendered Target product page; branch context visible; {label}"
+     branch_confirmed+=1
+     evidence="Exact branch context verified on retailer page; "+label+"."
     branch_rows.append((product["url"],product["title"],status,quantity,evidence))
+    products_checked+=1
    except Exception as e:
     failures+=1
-    log.warning("Target browser check failed for %s at %s: %s",product.get("title"),store.get("name"),str(e)[:180])
+    errors+=1
+    log.warning("Pickup check failed for %s at %s: %s",product.get("title"),store.get("name"),str(e)[:180])
   if branch_rows:
-   c.execute("DELETE FROM store_inventory WHERE store_id=?",(store["id"],))
-  for url,title,status,quantity,evidence in branch_rows:
-   checked_at=now()
-   label=(f"Retailer-reported units: {quantity}" if quantity is not None else "Count unavailable")
-   c.execute("""INSERT INTO store_inventory(store_id,product_url,product_title,status,quantity,quantity_label,source_url,detail,checked_at)
-    VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(store_id,product_url) DO UPDATE SET product_title=excluded.product_title,status=excluded.status,quantity=excluded.quantity,quantity_label=excluded.quantity_label,source_url=excluded.source_url,detail=excluded.detail,checked_at=excluded.checked_at""",
-    (store["id"],url,title,status,quantity,label,url,evidence,checked_at))
-   if status=="in_stock": confirmed+=1
-   elif status=="unknown": unknown+=1
-  state_value="checked" if branch_rows and failures==0 else ("partial" if branch_rows else "error")
-  detail=f"Chromium browser scan: {sum(1 for x in branch_rows if x[2]=='in_stock')} in stock; {len(branch_rows)} product pages visited; {failures} browser errors."
+   for url,title,status,quantity,evidence in branch_rows:
+    checked_at=now()
+    label=("Retailer-reported units: "+str(quantity)) if quantity is not None else "Count unavailable"
+    c.execute("""INSERT INTO store_inventory(store_id,product_url,product_title,status,quantity,quantity_label,source_url,detail,checked_at)
+     VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(store_id,product_url) DO UPDATE SET product_title=excluded.product_title,status=excluded.status,quantity=excluded.quantity,quantity_label=excluded.quantity_label,source_url=excluded.source_url,detail=excluded.detail,checked_at=excluded.checked_at""",
+     (store["id"],url,title,status,quantity,label,url,evidence,checked_at))
+    if status=="in_stock": confirmed+=1
+    elif status=="unknown": unknown+=1
+  state_value="checked" if branch_rows and failures==0 and branch_confirmed>0 else ("partial" if branch_rows else "error")
+  detail=("Browser pickup scan: "+str(branch_confirmed)+" explicit branch-level pickup results; "+str(len(branch_rows))+" product pages visited; "+str(failures)+" browser errors.")
   c.execute("INSERT INTO store_inventory_checks(store_id,status,checked_at,detail) VALUES(?,?,?,?) ON CONFLICT(store_id) DO UPDATE SET status=excluded.status,checked_at=excluded.checked_at,detail=excluded.detail",(store["id"],state_value,now(),detail))
-  c.commit(); checked+=1
+  c.commit()
+  checked+=1
  c.close()
- return {"confirmed_products":confirmed,"message":f"Browser-based retailer scan: {checked} Target branches visited; {confirmed} confirmed product/store listings in stock; {unknown} unknown; {errors} branch errors; {unsupported} other retailer branches not yet supported."}
+ return {"confirmed_products":confirmed,"message":"Store-pickup scan: "+str(checked)+" branches visited; "+str(products_checked)+" product pages checked; "+str(confirmed)+" explicitly pickup-available product/store matches; "+str(unknown)+" unknown; "+str(errors)+" page errors. Retailers that do not expose a verifiable branch selector remain unknown."}
 
 def run_scan(kind):
  global JINA_CALLS
