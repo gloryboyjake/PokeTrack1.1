@@ -368,7 +368,9 @@ def search_products(retailer):
   log.info("%s: %s Pokémon URLs found in retailer-owned sitemaps",retailer,sitemap_product_count)
  search_found={}
  # Public TrackaLacker listings add candidate retailer URLs; retailer pages still decide final stock.
- for u,title in tracker_candidates(retailer).items():
+ tracker_found=tracker_candidates(retailer)
+ log.info("%s: TrackaLacker supplied %s direct product candidates",retailer,len(tracker_found))
+ for u,title in tracker_found.items():
   search_found.setdefault(u,title)
  # Optional free-reference BujusJuJus feed (set BUJUS_API_KEY in Railway to enable).
  api_key=os.getenv("BUJUS_API_KEY","").strip()
@@ -467,7 +469,7 @@ def search_products(retailer):
   found.setdefault(u,title)
  products=[]; c=conn()
  priority=("30th","delta-reign","ascended-heroes","chaos-rising","pitch-black","prismatic","mega-evolution","151","charizard","booster-bundle","elite-trainer")
- candidates=sorted(found.items(),key=lambda item:(0 if any(term in item[0].lower() for term in priority) else 1))[:15]
+ candidates=sorted(found.items(),key=lambda item:(0 if any(term in (item[0]+" "+item[1]).lower() for term in priority) else 1))[:15]
  def fetch_candidate(item):
   u,title=item
   try:
@@ -518,7 +520,7 @@ def search_products(retailer):
     popularity_score=excluded.popularity_score,popularity_reason=excluded.popularity_reason,
     availability=excluded.availability,source=excluded.source,last_seen=excluded.last_seen,
     discovery_sources=excluded.discovery_sources,stock_checked_at=excluded.stock_checked_at""",
-    (retailer,title,u,price,stock,"retailer product page",t,t,1,seller,score,reason,"Direct retailer page + Google/DDG/Bing/Yahoo/TrackaLacker/Bujus (when enabled)",t))
+    (retailer,title,u,price,stock,"retailer product page",t,t,1,seller,score,reason,"Retailer sitemap/catalog + Google Shopping/web + Bing/Brave/Startpage + TrackaLacker + Rippr Restockr + Card Restock Tracker + Bujus (optional)",t))
    products.append({"retailer":retailer,"title":title,"url":u,"price":price,"availability":stock,"seller":seller,"popularity_score":score,"popularity_reason":reason})
   except Exception as e:
    log.warning("Retailer product page parse failed for %s (%s): %s",retailer,u,e)
