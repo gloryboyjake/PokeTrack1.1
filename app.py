@@ -114,6 +114,7 @@ def discover_stores():
  c.commit(); c.close(); return saved
 def clean_url(u):
  u=unquote(u or "")
+ if u.startswith("//"): u="https:"+u
  if u.startswith("/url?"): u=parse_qs(urlparse(u).query).get("q",[""])[0]
  p=urlparse(u)
  if p.hostname and "duckduckgo.com" in p.hostname:
