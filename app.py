@@ -284,6 +284,14 @@ SEED_PRODUCT_URLS={
  ]
 }
 
+def retailer_product_url_is_valid(retailer,url):
+ path=(urlparse(url).path or "").lower()
+ if retailer=="Target": return bool(re.match(r"^/p/-/a-\d+",path))
+ if retailer=="Walmart": return bool(re.match(r"^/ip/(?:[^/]+/)?\d+",path))
+ if retailer=="Best Buy": return path.startswith("/product/") or bool(re.match(r"^/site/.+\.p",path))
+ if path.startswith(("/search","/s/","/q/","/c/","/category/","/browse/")): return False
+ return True
+
 def search_products(retailer):
  global GOOGLE_RATE_LIMITED
  catalog=direct_catalog_url(retailer)
@@ -292,7 +300,7 @@ def search_products(retailer):
  def add_candidate(raw_url,title):
   u=clean_url(raw_url)
   title=(title or "").strip()
-  if not u or not retailer_domain_match(u,domain): return
+  if not u or not retailer_domain_match(u,domain) or not retailer_product_url_is_valid(retailer,u): return
   if not title or not is_pokemon_tcg_title(title): return
   found.setdefault(u,title[:250])
  for seed in SEED_PRODUCT_URLS.get(retailer,[]):
@@ -474,13 +482,13 @@ def search_products(retailer):
    log.info("%s verified: %s | online=%s | price=%s",retailer,title[:100],stock,price)
    score,reason=popularity_for(title,verification_text)
    t=now()
-   c.execute("""INSERT INTO products(retailer,title,url,price,availability,source,first_seen,last_seen,seller_verified,seller_name,popularity_score,popularity_reason,discovery_sources,stock_checked_at)
-    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(url) DO UPDATE SET title=excluded.title,
+   c.execute("""INSERT INTO products(retailer,title,url,price,availability,source,first_seen,last_seen,last_checked,seller_verified,seller_name,popularity_score,popularity_reason,discovery_sources,stock_checked_at)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(url) DO UPDATE SET title=excluded.title,
     price=COALESCE(excluded.price,products.price),seller_verified=1,seller_name=excluded.seller_name,
     popularity_score=excluded.popularity_score,popularity_reason=excluded.popularity_reason,
     availability=excluded.availability,source=excluded.source,last_seen=excluded.last_seen,
-    discovery_sources=excluded.discovery_sources,stock_checked_at=excluded.stock_checked_at""",
-    (retailer,title,u,price,stock,"retailer product page",t,t,1,seller,score,reason,"Retailer sitemap/catalog + Google Shopping/web + Bing/Brave/Startpage + TrackaLacker + Rippr Restockr + Card Restock Tracker + Bujus (optional)",t))
+    last_checked=excluded.last_checked,discovery_sources=excluded.discovery_sources,stock_checked_at=excluded.stock_checked_at""",
+    (retailer,title,u,price,stock,"retailer product page",t,t,t,1,seller,score,reason,"Retailer sitemap/catalog + Google Shopping/web + Bing/Brave/Startpage + TrackaLacker + Rippr Restockr + Card Restock Tracker + Bujus (optional)",t))
    products.append({"retailer":retailer,"title":title,"url":u,"price":price,"availability":stock,"seller":seller,"popularity_score":score,"popularity_reason":reason})
   except Exception as e:
    log.warning("Retailer product page parse failed for %s (%s): %s",retailer,u,e)
