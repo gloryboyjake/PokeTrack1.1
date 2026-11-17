@@ -12,6 +12,7 @@ log=logging.getLogger("poketrack")
 SCAN_LOCK=threading.Lock()
 DB_INIT_LOCK=threading.Lock()
 DB_READY=False
+GOOGLE_RATE_LIMITED=False
 DB_PATH=os.getenv("DB_PATH","/data/poketrack.db")
 ZIP=os.getenv("START_ZIP","22601")
 RADIUS=int(os.getenv("RADIUS_MILES","80"))
@@ -129,15 +130,15 @@ def direct_catalog_url(retailer):
  urls={
   "Target":"https://www.target.com/s?searchTerm=pokemon%20trading%20cards",
   "Walmart":"https://www.walmart.com/search?q=pokemon%20trading%20cards",
-  "Walgreens":"https://www.walgreens.com/q/all-pokemon-cards",
+  "Walgreens":"https://www.walgreens.com/search/results.jsp?Ntt=pokemon%20trading%20cards",
   "Best Buy":"https://www.bestbuy.com/site/searchpage.jsp?st=pokemon+trading+cards",
-  "Barnes & Noble":"https://www.barnesandnoble.com/s/pokemon%20trading%20cards",
+  "Barnes & Noble":"https://www.barnesandnoble.com/s/pokemon",
   "Costco":"https://www.costco.com/CatalogSearch?keyword=pokemon",
   "Sam's Club":"https://www.samsclub.com/s/pokemon",
   "Dollar General":"https://www.dollargeneral.com/search?query=pokemon",
   "Hobby Lobby":"https://www.hobbylobby.com/search/?q=pokemon",
   "Books-A-Million":"https://www.booksamillion.com/search?query=pokemon",
-  "Gabe's":"https://www.gabesstores.com/search?q=pokemon",
+  "Gabe's":"https://www.gabesstores.com/",
   "Amazon":"https://www.amazon.com/s?k=pokemon+trading+cards"
  }
  return urls.get(retailer)
@@ -164,8 +165,7 @@ def retailer_domain_match(url,domain):
  domain=(domain or "").lower()
  return host==domain or host.endswith("."+domain)
 def search_products(retailer):
- # Discover candidates from the retailer's own catalog first, then use free
- # public Google/Bing search results as a fallback when catalog pages are JS-only.
+ global GOOGLE_RATE_LIMITED
  catalog=direct_catalog_url(retailer)
  domain=RETAILERS[retailer][0]
  found={}
@@ -197,59 +197,66 @@ def search_products(retailer):
     except Exception: pass
   except requests.RequestException as e:
    log.warning("Direct catalog unavailable for %s: %s; using public search fallback",retailer,e)
- # Free Google Shopping plus normal web results. Search results only discover
- # candidates; seller identity is checked on each retailer product page below.
+ search_found={}
+ # DuckDuckGo is queried first because the Railway shared IP is currently
+ # rate-limited by Google. Only direct retailer-domain product URLs are kept.
+ try:
+  q=f'site:{domain} Pokemon trading cards OR Pokemon TCG OR Pokemon booster OR Elite Trainer Box'
+  r=requests.get("https://html.duckduckgo.com/html/",params={"q":q},headers={**HEADERS,"Referer":"https://duckduckgo.com/"},timeout=20)
+  r.raise_for_status()
+  if re.search(r"captcha|anomaly|bots use duckduckgo",r.text[:30000],re.I):
+   raise requests.RequestException("DuckDuckGo presented an anti-bot page")
+  soup=BeautifulSoup(r.text,"html.parser")
+  anchors=soup.select("a.result__a[href],a[data-testid='result-title-a'][href]")
+  if not anchors: anchors=soup.select("a[href]")
+  for a in anchors:
+   u=clean_url(a.get("href",""))
+   title=a.get_text(" ",strip=True)
+   parent=a.parent
+   context=parent.get_text(" ",strip=True) if parent else ""
+   combined=(title+" "+context).strip()
+   if u and retailer_domain_match(u,domain) and is_pokemon_tcg_title(combined):
+    search_found.setdefault(u,(title or combined)[:250])
+ except requests.RequestException as e:
+  log.warning("DuckDuckGo search unavailable for %s: %s",retailer,e)
+ # Keep Google Shopping/web as a secondary source, but stop globally after the
+ # first 429 so we do not repeat four failing requests for every retailer.
  searches=[
   ("shopping",f"Pokemon cards {retailer}"),
   ("shopping",f"Pokemon trading cards {retailer}"),
   ("web",f"site:{domain} Pokemon TCG booster ETB tin"),
   ("web",f"site:{domain} Pokemon 30th anniversary OR Ascended Heroes OR Mega Evolution OR Chaos Rising OR Pitch Black OR Prismatic Evolutions OR Delta Reign")
  ]
- search_found={}
- google_blocked=False
- for mode,q in searches:
-  try:
-   params={"tbm":"shop","num":40,"q":q} if mode=="shopping" else {"num":40,"q":q}
-   r=requests.get("https://www.google.com/search",params=params,headers=HEADERS,timeout=20)
-   if r.status_code==429: raise requests.HTTPError("Google rate limited this server (HTTP 429)")
-   r.raise_for_status()
-   html=r.text
-   if re.search(r"unusual traffic|not a robot|captcha|consent\\.google\\.com",html[:30000],re.I):
-    google_blocked=True
-    raise requests.HTTPError("Google presented an automated-traffic or consent page")
-   soup=BeautifulSoup(html,"html.parser")
-   for a in soup.select("a[href]"):
-    raw=a.get("href","")
-    u=clean_url(raw)
-    if not u or not retailer_domain_match(u,domain): continue
-    title=a.get_text(" ",strip=True)
-    parent=a.parent
-    context=parent.get_text(" ",strip=True) if parent else ""
-    if len(context)<40 and parent and parent.parent: context=parent.parent.get_text(" ",strip=True)
-    combined=(title+" "+context).strip()
-    if not is_pokemon_tcg_title(combined): continue
-    if not title or not is_pokemon_tcg_title(title):
-     match=re.search(r"(?:Pok[eé]mon|Pokemon)[^.]{5,150}",combined,re.I)
-     title=match.group(0).strip() if match else combined[:250]
-    search_found.setdefault(u,title[:250])
-  except requests.RequestException as e:
-   log.warning("Google %s search unavailable for %s: %s",mode,retailer,e)
-   if google_blocked: break
- # DuckDuckGo HTML search is a free, no-key fallback when Google blocks the server.
- if len(search_found)<10:
-  try:
-   q=f"site:{domain} Pokemon trading cards OR Pokemon TCG OR Pokemon booster OR Elite Trainer Box"
-   r=requests.get("https://html.duckduckgo.com/html/",params={"q":q},headers=HEADERS,timeout=20)
-   r.raise_for_status()
-   soup=BeautifulSoup(r.text,"html.parser")
-   for a in soup.select("a.result__a, a.result-link, a[href]"):
-    u=clean_url(a.get("href","")); title=a.get_text(" ",strip=True)
-    parent=a.parent; context=parent.get_text(" ",strip=True) if parent else ""
-    combined=(title+" "+context).strip()
-    if u and retailer_domain_match(u,domain) and is_pokemon_tcg_title(combined):
-     search_found.setdefault(u,(title or combined)[:250])
-  except requests.RequestException as e:
-   log.warning("DuckDuckGo search unavailable for %s: %s",retailer,e)
+ if len(search_found)<10 and not GOOGLE_RATE_LIMITED:
+  for mode,q in searches:
+   try:
+    params={"tbm":"shop","num":40,"q":q} if mode=="shopping" else {"num":40,"q":q}
+    r=requests.get("https://www.google.com/search",params=params,headers=HEADERS,timeout=20)
+    if r.status_code==429:
+     GOOGLE_RATE_LIMITED=True
+     raise requests.HTTPError("Google rate limited this server (HTTP 429)")
+    r.raise_for_status()
+    html=r.text
+    if re.search(r"unusual traffic|not a robot|captcha|consent\.google\.com",html[:30000],re.I):
+     GOOGLE_RATE_LIMITED=True
+     raise requests.HTTPError("Google presented an automated-traffic or consent page")
+    soup=BeautifulSoup(html,"html.parser")
+    for a in soup.select("a[href]"):
+     u=clean_url(a.get("href",""))
+     if not u or not retailer_domain_match(u,domain): continue
+     title=a.get_text(" ",strip=True)
+     parent=a.parent
+     context=parent.get_text(" ",strip=True) if parent else ""
+     if len(context)<40 and parent and parent.parent: context=parent.parent.get_text(" ",strip=True)
+     combined=(title+" "+context).strip()
+     if not is_pokemon_tcg_title(combined): continue
+     if not title or not is_pokemon_tcg_title(title):
+      match=re.search(r"(?:Pok[eé]mon|Pokemon)[^.]{5,150}",combined,re.I)
+      title=match.group(0).strip() if match else combined[:250]
+     search_found.setdefault(u,title[:250])
+   except requests.RequestException as e:
+    log.warning("Google %s search unavailable for %s: %s",mode,retailer,e)
+    if GOOGLE_RATE_LIMITED: break
  if len(search_found)<10:
   try:
    q=f'site:{domain} Pokemon trading cards OR Pokemon TCG OR Pokemon booster OR Elite Trainer Box'
