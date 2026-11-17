@@ -524,8 +524,7 @@ def search_products(retailer, progress_callback=None):
    log.warning("Retailer sitemap unavailable for %s (%s): %s",retailer,sitemap_url,e)
  if sitemap_product_count:
   log.info("%s: %s Pokémon URLs found in retailer-owned sitemaps",retailer,sitemap_product_count)
- search_found={}
- # Free, keyless Bing RSS discovery. This is a public search-results feed:
+  # Free, keyless Bing RSS discovery. This is a public search-results feed:
  # no account, API key, paid proxy, or third-party scraping service is used.
  # Search results only discover candidate retailer URLs; retailer pages below
  # remain the source of truth for product identity and availability.
@@ -572,26 +571,7 @@ def search_products(retailer, progress_callback=None):
    log.warning("%s: free Bing RSS discovery query failed (%s): %s",retailer,term_index,str(e)[:180])
  # Public TrackaLacker listings add candidate retailer URLs; retailer pages still decide final stock.
  log.info("%s: using third-party tracker product names in retailer search",retailer)
- # Optional free-reference BujusJuJus feed (set BUJUS_API_KEY in Railway to enable).
- api_key=os.getenv("BUJUS_API_KEY","").strip()
- if api_key:
-  try:
-   payload={"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_recent_drops","arguments":{"sinceHours":72,"minConfidence":"high","kind":"restock","limit":200}}}
-   br=requests.post("https://bujusjuj.us/mcp",json=payload,headers={**HEADERS,"Authorization":"Bearer "+api_key},timeout=25)
-   br.raise_for_status()
-   outer=br.json()
-   inner=json.loads(outer.get("result",{}).get("content",[{}])[0].get("text","[]"))
-   for alert in inner if isinstance(inner,list) else inner.get("alerts",[]):
-    url=clean_url(alert.get("productUrl","")); name=str(alert.get("retailer","")).lower()
-    aliases={"target":"Target","walmart":"Walmart","bestbuy":"Best Buy","costco":"Costco","samsclub":"Sam's Club"}
-    if aliases.get(name)==retailer and url and retailer_domain_match(url,domain):
-     search_found.setdefault(url,str(alert.get("title","Pokémon TCG product"))[:250])
-  except (requests.RequestException,ValueError,KeyError,IndexError) as e:
-   log.warning("BujusJuJus feed unavailable for %s: %s",retailer,e)
- # No Google/Bing/Brave/Jina scraping. Product candidates come from retailer
- # catalog pages, retailer-owned sitemaps, curated seeds and public restock feeds.
- for u,title in search_found.items():
-  found.setdefault(u,title)
+ # Search-engine results supplement retailer catalog pages, sitemaps and curated seeds.
  products=[]; c=conn()
  priority=("30th","delta-reign","ascended-heroes","chaos-rising","pitch-black","prismatic","mega-evolution","151","charizard","booster-bundle","elite-trainer")
  candidate_limit=500 if retailer=="Target" else 150
@@ -692,7 +672,7 @@ def search_products(retailer, progress_callback=None):
     popularity_score=excluded.popularity_score,popularity_reason=excluded.popularity_reason,
     availability=excluded.availability,source=excluded.source,last_seen=excluded.last_seen,
     last_checked=excluded.last_checked,discovery_sources=excluded.discovery_sources,stock_checked_at=excluded.stock_checked_at""",
-    (retailer,title,u,price,stock,"retailer product page",t,t,t,1,seller,score,reason,"Retailer-owned catalog/sitemap + curated seeds + public restock feeds",t))
+    (retailer,title,u,price,stock,"retailer product page",t,t,t,1,seller,score,reason,"Retailer catalog/sitemap + free Bing RSS search + curated seeds",t))
    products.append({"retailer":retailer,"title":title,"url":u,"price":price,"availability":stock,"seller":seller,"popularity_score":score,"popularity_reason":reason})
   except Exception as e:
    log.warning("Retailer product page parse failed for %s (%s): %s",retailer,u,e)
