@@ -62,53 +62,55 @@ def retailer_get(url, **kwargs):
    log.warning("Browser-impersonated request failed for %s; retrying standard HTTP: %s",host,e)
  return requests.get(url,**kwargs)
 
+BROWSER_LOCK=threading.RLock()
+BROWSER_MANAGER=None
+BROWSER_INSTANCE=None
+BROWSER_CONTEXT=None
 def browser_get(url, timeout=25, store=None):
- # Real Chromium session: navigate and interact with retailer UI, without spoofing
- # browser fingerprints or defeating CAPTCHA/access controls.
+ # Reuse one genuine Chromium session for the scan; navigate actual retailer pages
+ # and use visible store controls. No fingerprint spoofing or access-control bypass.
+ global BROWSER_MANAGER,BROWSER_INSTANCE,BROWSER_CONTEXT
  from playwright.sync_api import sync_playwright
- with sync_playwright() as p:
-  browser=p.chromium.launch(headless=True,args=["--no-sandbox"])
-  context=browser.new_context(locale="en-US",timezone_id="America/New_York",viewport={"width":1365,"height":900})
-  page=context.new_page()
-  response=page.goto(url,wait_until="domcontentloaded",timeout=timeout*1000)
-  try: page.wait_for_load_state("networkidle",timeout=min(8000,timeout*1000))
-  except Exception: pass
-  if store and "target.com" in (urlparse(url).hostname or ""):
-   # Use the visible store selector where present; never assume a ZIP alone proves
-   # that the selected branch changed.
-   try:
-    for label in ("Change store","Choose store","Edit store","My store"):
-     locator=page.get_by_text(label,exact=False).first
-     if locator.count():
-      locator.click(timeout=1500); page.wait_for_timeout(700); break
-    fields=page.locator("input:visible")
-    for idx in range(min(fields.count(),8)):
-     field=fields.nth(idx)
-     placeholder=(field.get_attribute("placeholder") or "").lower()
-     aria=(field.get_attribute("aria-label") or "").lower()
-     if any(x in placeholder+aria for x in ("zip","city","state","location","store")):
-      field.fill(str(store.get("postcode") or store.get("city") or "")); page.wait_for_timeout(1300)
-      target_label=store.get("name") or store.get("city") or ""
-      option=page.get_by_text(target_label,exact=False).last
-      if option.count(): option.click(timeout=2000); page.wait_for_timeout(700)
-      for action in ("Save","Use this store","Select store","Set as my store","Confirm"):
-       btn=page.get_by_role("button",name=re.compile(action,re.I)).first
-       if btn.count():
-        btn.click(timeout=1500); page.wait_for_timeout(1200); break
-      break
-   except Exception as e:
-    log.info("Visible Target store selector could not be completed for %s: %s",store.get("name"),str(e)[:140])
-  page.wait_for_timeout(1000)
-  page.evaluate("window.scrollTo(0, Math.min(document.body.scrollHeight, 800))")
-  page.wait_for_timeout(500)
-  html=page.content(); status=response.status if response else 200; final_url=page.url
-  browser.close()
  from types import SimpleNamespace
- result=SimpleNamespace(ok=status<400,status_code=status,text=html,url=final_url)
- def raise_for_status():
-  if status>=400: raise requests.HTTPError(f"HTTP {status} for {final_url}")
- result.raise_for_status=raise_for_status
- return result
+ with BROWSER_LOCK:
+  if BROWSER_INSTANCE is None:
+   BROWSER_MANAGER=sync_playwright().start()
+   BROWSER_INSTANCE=BROWSER_MANAGER.chromium.launch(headless=True,args=["--no-sandbox"])
+   BROWSER_CONTEXT=BROWSER_INSTANCE.new_context(locale="en-US",timezone_id="America/New_York",viewport={"width":1365,"height":900})
+  page=BROWSER_CONTEXT.new_page()
+  try:
+   response=page.goto(url,wait_until="domcontentloaded",timeout=timeout*1000)
+   try: page.wait_for_load_state("networkidle",timeout=min(7000,timeout*1000))
+   except Exception: pass
+   if store and "target.com" in (urlparse(url).hostname or ""):
+    try:
+     for label in ("Change store","Choose store","Edit store","My store"):
+      locator=page.get_by_text(label,exact=False).first
+      if locator.count():
+       locator.click(timeout=1500); page.wait_for_timeout(600); break
+     fields=page.locator("input:visible")
+     for idx in range(min(fields.count(),8)):
+      field=fields.nth(idx)
+      hint=((field.get_attribute("placeholder") or "")+" "+(field.get_attribute("aria-label") or "")).lower()
+      if any(x in hint for x in ("zip","city","state","location","store")):
+       field.fill(str(store.get("postcode") or store.get("city") or "")); page.wait_for_timeout(1000)
+       target_label=store.get("name") or store.get("city") or ""
+       option=page.get_by_text(target_label,exact=False).last
+       if option.count(): option.click(timeout=1800); page.wait_for_timeout(600)
+       for action in ("Save","Use this store","Select store","Set as my store","Confirm"):
+        btn=page.get_by_role("button",name=re.compile(action,re.I)).first
+        if btn.count():
+         btn.click(timeout=1400); page.wait_for_timeout(900); break
+       break
+    except Exception as e:
+     log.info("Visible store selection not completed for %s: %s",store.get("name"),str(e)[:120])
+   page.wait_for_timeout(700)
+   page.evaluate("window.scrollTo(0, Math.min(document.body.scrollHeight, 800))")
+   page.wait_for_timeout(350)
+   html=page.content(); status=response.status if response else 200; final_url=page.url
+   return SimpleNamespace(ok=status<400,status_code=status,text=html,url=final_url,raise_for_status=lambda: (_ for _ in ()).throw(requests.HTTPError(f"HTTP {status} for {final_url}")) if status>=400 else None)
+  finally:
+   page.close()
 
 RETAILERS={
  "Target":["target.com"],"Walmart":["walmart.com"],"Best Buy":["bestbuy.com"],
@@ -602,7 +604,7 @@ def inventory_status_from_product_page(page_text):
 def scan_store_inventory():
  c=conn()
  stores=[dict(x) for x in c.execute("SELECT * FROM stores ORDER BY retailer,distance")]
- products=[dict(x) for x in c.execute("SELECT * FROM products WHERE seller_verified=1 ORDER BY popularity_score DESC,last_seen DESC LIMIT 120")]
+ products=[dict(x) for x in c.execute("SELECT * FROM products WHERE seller_verified=1 ORDER BY popularity_score DESC,last_seen DESC LIMIT 30")]
  checked=0; confirmed=0; unknown=0; errors=0; unsupported=0
  for store in stores:
   if store["retailer"]!="Target":
