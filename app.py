@@ -143,7 +143,7 @@ def branch_stock_status(blob):
  blob=(blob or "").lower()
  if re.search(r'out of stock|sold out|unavailable for pickup|not available at this store',blob): return "out_of_stock",None,"Out of stock"
  if re.search(r'in stock|available for pickup|pickup available|ready for pickup|limited stock|available now',blob):
-  m=re.search(r'(?:only\\s*)?(\\d+)\\s*(?:left|available|in stock)',blob)
+  m=re.search(r'(?:only\s*)?(\d+)\s*(?:left|available|in stock)',blob)
   qty=int(m.group(1)) if m else None
   return "in_stock",qty,(str(qty) if qty is not None else "count unavailable")
  return "unknown",None,"count unavailable"
@@ -159,7 +159,7 @@ def scan_store_inventory():
   domain=RETAILERS.get(store["retailer"],[None])[0]; candidates=by_retailer.get(store["retailer"],[])
   if not domain or not candidates: continue
   city=store.get("city") or ""; zip_code=store.get("postcode") or ""; address=store.get("address") or ""
-  m=re.match(r'\\s*(\\d+)',address); street_no=m.group(1) if m else ""
+  m=re.match(r'\s*(\d+)',address); street_no=m.group(1) if m else ""
   branch_name=(store.get("name") or "").lower()
   query=f'site:{domain} pokemon ("in stock" OR "available for pickup" OR "pickup available") "{city}" "{zip_code}"'
   try:
@@ -175,7 +175,7 @@ def scan_store_inventory():
   except requests.RequestException:
    try:
     r=requests.get("https://www.bing.com/search",params={"q":query,"format":"rss"},headers=HEADERS,timeout=12);r.raise_for_status()
-    soup=BeautifulSoup(r.text,"xml");results=[]
+    soup=BeautifulSoup(r.text,"html.parser");results=[]
     for item in soup.select("item"):
      u=clean_url(item.link.get_text(strip=True) if item.link else "")
      snippet=" ".join([item.title.get_text(" ",strip=True) if item.title else "",item.description.get_text(" ",strip=True) if item.description else ""])
