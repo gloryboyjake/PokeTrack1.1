@@ -173,6 +173,28 @@ def online_stock_status(page_text, embedded_text=""):
  if re.search(r"add to cart|available to ship|in stock online|available online|ready to ship",text) and not re.search(r"aria-disabled=\"true\"|button[^>]*disabled",text): return "in_stock"
  return "unknown"
 
+RESTOCKR_TERMS_CACHE=[]
+RESTOCKR_TERMS_CACHE_AT=0
+def restockr_product_terms():
+ global RESTOCKR_TERMS_CACHE,RESTOCKR_TERMS_CACHE_AT
+ if RESTOCKR_TERMS_CACHE and time.time()-RESTOCKR_TERMS_CACHE_AT<21600:
+  return RESTOCKR_TERMS_CACHE
+ terms=[]
+ try:
+  r=requests.get("https://rippr.app/restockr",headers=HEADERS,timeout=20); r.raise_for_status()
+  text=BeautifulSoup(r.text,"html.parser").get_text(" ",strip=True)
+  pattern=re.compile(r"((?:(?:19|20)\\d{2}\\s+)?Pok[eé]mon[^$]{5,120}?)\\s+Pok[eé]mon\\s+\\$",re.I)
+  for match in pattern.finditer(text):
+   title=re.sub(r"\\s+"," ",match.group(1)).strip()
+   if is_pokemon_tcg_title(title) and title.lower() not in [x.lower() for x in terms]:
+    terms.append(title[:120])
+ except requests.RequestException as e:
+  log.warning("Rippr Restockr catalog unavailable: %s",e)
+ RESTOCKR_TERMS_CACHE=terms[:12]
+ RESTOCKR_TERMS_CACHE_AT=time.time()
+ log.info("Rippr Restockr supplied %s trending Pokémon TCG product names",len(RESTOCKR_TERMS_CACHE))
+ return RESTOCKR_TERMS_CACHE
+
 TRACKER_CANDIDATES_CACHE={}
 TRACKER_CANDIDATES_CACHE_AT=0
 def tracker_candidates(retailer):
