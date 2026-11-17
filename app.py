@@ -119,6 +119,19 @@ def is_pokemon_tcg_title(title):
  if not re.search(r'pokemon|pokémon',title): return False
  if re.search(r'figure|plush|costume|apparel|backpack|toy car|lunch box',title): return False
  return bool(re.search(r'trading card|tcg|booster|elite trainer|etb|collection box|blister|tin|deck|card pack|card game',title))
+def verify_retailer_seller(retailer, page_text):
+ text=(page_text or "").lower()
+ if retailer in ("Target","Walmart","Best Buy"):
+  aliases={"Target":"target","Walmart":"walmart","Best Buy":"best buy"}
+  return (True,retailer) if re.search(r"(?:sold by|sold and shipped by)\\s*"+aliases[retailer],text) else (False,None)
+ if "marketplace seller" in text or "third-party seller" in text: return False,None
+ return True,retailer
+def popularity_for(title, page_text):
+ t=(title or "").lower(); body=(page_text or "").lower(); score=0; reason=[]
+ for pts,term in [(35,"30th celebration"),(32,"ascended heroes"),(30,"chaos rising"),(28,"pitch black"),(26,"prismatic evolutions"),(22,"pokemon day 2026"),(20,"first partner illustration"),(18,"delta reign"),(15,"mega evolution")]:
+  if term in t: score=max(score,pts); reason.append(term.title())
+ if re.search(r"best.?sell|popular|top seller|customer favorite",body): score+=8; reason.append("retailer popularity")
+ return min(score,100),(", ".join(reason) or "standard TCG listing")
 def search_products(retailer):
  # Read retailer-owned catalog pages directly and follow their product links.
  catalog=direct_catalog_url(retailer)
