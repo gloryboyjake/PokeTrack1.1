@@ -618,8 +618,8 @@ def inventory_status_from_product_page(page_text):
  # Do not interpret shipping, delivery, or generic Add to Cart as local store stock.
  if re.search(r'not available at this store|not sold at your store|out of stock at this store|unavailable for pickup at this store',text):
   return "out_of_stock",None,"Out of stock"
- if re.search(r'in stock at this store|available for pickup at this store|pickup available at this store|in stock at \\w[\\w -]{0,45}store',text):
-  m=re.search(r'(?:only\\s*)?(\\d+)\\s*(?:left|available|in stock)',text)
+ if re.search(r'in stock at this store|available for pickup at this store|pickup available at this store|in stock at \w[\w -]{0,45}store',text):
+  m=re.search(r'(?:only\s*)?(\d+)\s*(?:left|available|in stock)',text)
   qty=int(m.group(1)) if m else None
   return "in_stock",qty,(str(qty) if qty is not None else "count unavailable")
  return "unknown",None,"count unavailable"
@@ -640,7 +640,7 @@ def scan_store_inventory():
     page=browser_get(product["url"],timeout=25,store=store)
     if not page.ok: raise requests.HTTPError(f"Retailer page HTTP {page.status_code}")
     soup=BeautifulSoup(page.text,"html.parser")
-    visible=re.sub(r"\\s+"," ",soup.get_text(" ",strip=True)).lower()
+    visible=re.sub(r"\s+"," ",soup.get_text(" ",strip=True)).lower()
     street=(store.get("address") or "").split(",")[0].lower()
     street_token=street.split()[0] if street else ""
     branch_name=(store.get("name") or "").lower()
