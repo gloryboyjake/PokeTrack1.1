@@ -304,7 +304,9 @@ def search_products(retailer):
   if not title or not is_pokemon_tcg_title(title): return
   found.setdefault(u,title[:250])
  for seed in SEED_PRODUCT_URLS.get(retailer,[]):
-  add_candidate(seed,"Pokémon TCG Elite Trainer Box")
+  seed_url=clean_url(seed)
+  if seed_url and retailer_domain_match(seed_url,domain) and retailer_product_url_is_valid(retailer,seed_url):
+   found.setdefault(seed_url,"Pokemon TCG Elite Trainer Box")
  if catalog:
   try:
    r=retailer_get(catalog,headers=HEADERS,timeout=25)
