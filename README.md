@@ -1,26 +1,36 @@
-# PokeTrack
+# PokeTrack Radar
 
-A Flask API for discovering Pokémon TCG product listings on retailer websites using public search result pages. No paid search API key is required.
+A single Flask application and dashboard for discovering Pokémon TCG product listings and physical retailer locations around Winchester, Virginia.
 
-## Deploy on Railway
+## Defaults
+- Starting ZIP: 22601
+- Radius: 200 miles (straight-line distance)
+- Scan cadence: intended every 5 minutes through a Railway cron service
+- Store directory: OpenStreetMap / Overpass
+- ZIP geocoding: US Census Geocoder
+- Product discovery: public retailer search pages; no paid search API key
 
-1. Create a Railway service from this GitHub repository.
-2. Add a persistent volume mounted at `/data` so SQLite data survives restarts.
+## Deploy
+1. Deploy this repository's `rebuild/clean-start` branch to Railway.
+2. Attach a persistent volume mounted at `/data`.
 3. Set `DB_PATH=/data/poketrack.db`, `START_ZIP=22601`, and `RADIUS_MILES=200`.
-4. Optionally set `SCAN_TOKEN` and send it as the `X-Scan-Token` header to protect scan endpoints.
-5. Add a Railway Cron service using the same repo and run `curl -X POST https://YOUR-APP-URL/api/scan` on your desired schedule.
+4. Start with `gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --timeout 900`.
+5. Set the health check path to `/health`.
+6. Configure a Railway cron service to POST to `/api/scan` every five minutes. The cron must call this same app and database.
 
-## API
+## Dashboard and API
+- `/` — responsive PokeTrack dashboard
+- `/health` — health check
+- `GET /api/stores` — discovered physical store locations
+- `GET /api/products` — discovered online product listings
+- `GET /api/history` — scan history
+- `GET /api/summary` — dashboard summary
+- `POST /api/scan` — full scan (store directory and product listings)
+- `POST /api/scan?kind=stores` — refresh store directory
+- `POST /api/scan?kind=products` — refresh product listings
 
-- `GET /health`
-- `POST /api/scan` — scans all configured retailers
-- `POST /api/scan-retailer?name=Target` — scans one retailer
-- `GET /api/products` — lists discovered products; filter with `retailer` and `availability`
-- `GET /api/retailer-status`
-- `GET /api/history`
+## Important accuracy limits
+The store directory is based on OpenStreetMap tags and coverage; it can miss branches or contain incomplete addresses. The radius is calculated from the geocoded ZIP reference point using straight-line distance. Product discovery is best-effort and depends on public search and retailer page access. A product page is not proof of local branch stock. Availability is marked in stock or out of stock only when explicit wording appears on the retailer page; otherwise it remains unknown. No inventory counts are fabricated.
 
-Configured retailers: Target, Walmart, Best Buy, Amazon, Barnes & Noble, Costco, Sam's Club, Walgreens, Dollar General, Hobby Lobby, Books-A-Million, and Gabe's.
-
-## Important limitations
-
-This first version discovers online product pages, not verified shelf-level inventory at individual store branches. A retailer is marked `in_stock` or `out_of_stock` only when its product page or search snippet contains explicit availability wording; otherwise it remains `unknown`. Search engines and retailers may block automated requests or change page markup, so scan results are best-effort discovery, not guaranteed live inventory. No stock counts are fabricated.
+## Data
+SQLite is stored at `/data/poketrack.db`. Keep the Railway volume attached at `/data` when redeploying. The app creates its tables if missing and does not drop existing tables.
