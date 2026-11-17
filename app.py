@@ -1,349 +1,162 @@
-import os
-import re
-import json
-import time
-import sqlite3
-import logging
+import os, re, json, math, time, sqlite3, logging
 from datetime import datetime, timezone
 from urllib.parse import urlparse, urlunparse, parse_qs, unquote
-
 import requests
 from bs4 import BeautifulSoup
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, render_template_string
 
-app = Flask(__name__)
-logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
-log = logging.getLogger("poketrack")
-
-DB_PATH = os.getenv("DB_PATH", "/data/poketrack.db")
-ZIP_CODE = os.getenv("START_ZIP", "22601")
-RADIUS_MILES = int(os.getenv("RADIUS_MILES", "200"))
-USER_AGENT = os.getenv(
-    "USER_AGENT",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-)
-HEADERS = {"User-Agent": USER_AGENT, "Accept-Language": "en-US,en;q=0.9"}
-
-# Retailer domains are allow-listed so search results from marketplaces and
-# unrelated sites are not accidentally presented as retailer inventory.
-RETAILERS = {
-    "Target": ["target.com"],
-    "Walmart": ["walmart.com"],
-    "Best Buy": ["bestbuy.com"],
-    "Amazon": ["amazon.com"],
-    "Barnes & Noble": ["barnesandnoble.com"],
-    "Costco": ["costco.com"],
-    "Sam's Club": ["samsclub.com"],
-    "Walgreens": ["walgreens.com"],
-    "Dollar General": ["dollargeneral.com"],
-    "Hobby Lobby": ["hobbylobby.com"],
-    "Books-A-Million": ["booksamillion.com"],
-    "Gabe's": ["gabesstores.com"],
+app=Flask(__name__)
+logging.basicConfig(level=os.getenv("LOG_LEVEL","INFO"))
+log=logging.getLogger("poketrack")
+DB_PATH=os.getenv("DB_PATH","/data/poketrack.db")
+ZIP=os.getenv("START_ZIP","22601")
+RADIUS=int(os.getenv("RADIUS_MILES","200"))
+UA=os.getenv("USER_AGENT","Mozilla/5.0 (compatible; PokeTrackRadar/1.0)")
+HEADERS={"User-Agent":UA,"Accept-Language":"en-US,en;q=0.9"}
+RETAILERS={
+ "Target":["target.com"],"Walmart":["walmart.com"],"Best Buy":["bestbuy.com"],
+ "Amazon":["amazon.com"],"Barnes & Noble":["barnesandnoble.com"],"Costco":["costco.com"],
+ "Sam's Club":["samsclub.com"],"Walgreens":["walgreens.com"],"Dollar General":["dollargeneral.com"],
+ "Hobby Lobby":["hobbylobby.com"],"Books-A-Million":["booksamillion.com"],"Gabe's":["gabesstores.com"]
 }
-SEARCH_TERMS = [
-    '"Pokemon trading card game"',
-    "Pokemon TCG booster bundle",
-    "Pokemon Elite Trainer Box",
-    "Pokemon booster box",
-    "Pokemon collection box tin",
-]
-
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS products (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  retailer TEXT NOT NULL,
-  title TEXT NOT NULL,
-  url TEXT NOT NULL UNIQUE,
-  price TEXT,
-  availability TEXT NOT NULL DEFAULT 'unknown',
-  source TEXT NOT NULL DEFAULT 'search_result',
-  first_seen TEXT NOT NULL,
-  last_seen TEXT NOT NULL,
-  last_checked TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS scan_runs (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  retailer TEXT NOT NULL,
-  started_at TEXT NOT NULL,
-  finished_at TEXT,
-  status TEXT NOT NULL,
-  found INTEGER NOT NULL DEFAULT 0,
-  message TEXT
-);
+SCHEMA="""
+CREATE TABLE IF NOT EXISTS stores(id INTEGER PRIMARY KEY, retailer TEXT NOT NULL, name TEXT NOT NULL, address TEXT,
+ city TEXT, state TEXT, postcode TEXT, lat REAL NOT NULL, lon REAL NOT NULL, distance REAL NOT NULL,
+ source TEXT NOT NULL, source_url TEXT, checked_at TEXT NOT NULL, UNIQUE(retailer,name,lat,lon));
+CREATE TABLE IF NOT EXISTS products(id INTEGER PRIMARY KEY, retailer TEXT NOT NULL, title TEXT NOT NULL,
+ url TEXT NOT NULL UNIQUE, price TEXT, availability TEXT NOT NULL DEFAULT 'unknown',
+ source TEXT NOT NULL, first_seen TEXT NOT NULL, last_seen TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS scan_runs(id INTEGER PRIMARY KEY, kind TEXT NOT NULL, started_at TEXT NOT NULL,
+ finished_at TEXT, status TEXT NOT NULL, found INTEGER DEFAULT 0, message TEXT);
+CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);
 """
-
-def utcnow():
-    return datetime.now(timezone.utc).isoformat()
-
-def db():
-    folder = os.path.dirname(DB_PATH)
-    if folder:
-        os.makedirs(folder, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH, timeout=30)
-    conn.row_factory = sqlite3.Row
-    conn.executescript(SCHEMA)
-    return conn
-
-def clean_url(url):
-    url = unquote(url or "").strip()
-    if url.startswith("/url?"):
-        query = parse_qs(urlparse(url).query)
-        url = query.get("q", query.get("url", [url]))[0]
-    parsed = urlparse(url)
-    if parsed.scheme not in ("http", "https") or not parsed.netloc:
-        return None
-    host = parsed.netloc.lower().split(":")[0]
-    if host.endswith("google.com") or host.endswith("bing.com"):
-        return None
-    return urlunparse((parsed.scheme, parsed.netloc, parsed.path, "", "", ""))
-
-def belongs_to(url, domains):
-    host = (urlparse(url).hostname or "").lower()
-    return any(host == d or host.endswith("." + d) for d in domains)
-
-def search_web(query):
-    """Use public search result HTML; no paid API key is required."""
-    results = []
-    endpoints = [
-        ("https://www.google.com/search", {"q": query, "num": "20"}),
-        ("https://www.bing.com/search", {"q": query, "count": "20"}),
-    ]
-    for endpoint, params in endpoints:
-        try:
-            response = requests.get(endpoint, params=params, headers=HEADERS, timeout=18)
-            if response.status_code != 200:
-                log.warning("Search returned HTTP %s for %s", response.status_code, endpoint)
-                continue
-            soup = BeautifulSoup(response.text, "html.parser")
-            for a in soup.select("a[href]"):
-                href = a.get("href", "")
-                if endpoint.startswith("https://www.bing.com"):
-                    # Bing result links are normally nested under li.b_algo.
-                    parent = a.find_parent("li", class_="b_algo")
-                    if not parent:
-                        continue
-                    heading = parent.find(["h2", "h3"])
-                    title = heading.get_text(" ", strip=True) if heading else a.get_text(" ", strip=True)
-                    snippet_node = parent.select_one(".b_caption p")
-                    snippet = snippet_node.get_text(" ", strip=True) if snippet_node else ""
-                else:
-                    title = a.get_text(" ", strip=True)
-                    snippet = ""
-                    parent = a.find_parent("div")
-                    if parent:
-                        snippet = parent.get_text(" ", strip=True)[:500]
-                url = clean_url(href)
-                if url and title:
-                    results.append({"title": title[:300], "url": url, "snippet": snippet[:500]})
-        except requests.RequestException as exc:
-            log.warning("Search request failed: %s", exc)
-        if results:
-            break
-        time.sleep(0.6)
-    # De-duplicate URLs while preserving result order.
-    seen, unique = set(), []
-    for item in results:
-        if item["url"] not in seen:
-            seen.add(item["url"])
-            unique.append(item)
-    return unique
-
-def page_details(url, fallback_title="", fallback_snippet=""):
-    title, price, availability = fallback_title, None, "unknown"
-    source = "search_result"
+def now(): return datetime.now(timezone.utc).isoformat()
+def conn():
+ os.makedirs(os.path.dirname(DB_PATH) or ".",exist_ok=True)
+ c=sqlite3.connect(DB_PATH,timeout=30); c.row_factory=sqlite3.Row; c.executescript(SCHEMA); return c
+def haversine(a,b,c,d):
+ r=3958.7613; p1,p2=math.radians(a),math.radians(c)
+ return 2*r*math.asin(math.sqrt(math.sin((p2-p1)/2)**2+math.cos(p1)*math.cos(p2)*math.sin(math.radians(d-b)/2)**2))
+def zip_origin(z):
+ r=requests.get("https://geocoding.geo.census.gov/geocoder/locations/onelineaddress",params={"address":z+", USA","benchmark":"Public_AR_Current","format":"json"},headers=HEADERS,timeout=20); r.raise_for_status()
+ matches=r.json().get("result",{}).get("addressMatches",[])
+ if not matches: raise RuntimeError("ZIP code could not be geocoded by the US Census service")
+ x=matches[0]["coordinates"]; return float(x["y"]),float(x["x"])
+def discover_stores():
+ lat,lon=zip_origin(ZIP)
+ query='[out:json][timeout:45];(node(around:%d,%s,%s)["shop"];way(around:%d,%s,%s)["shop"];relation(around:%d,%s,%s)["shop"];);out center tags;'% (RADIUS*1609,lat,lon,RADIUS*1609,lat,lon,RADIUS*1609,lat,lon)
+ response=requests.post("https://overpass-api.de/api/interpreter",data=query,headers=HEADERS,timeout=65); response.raise_for_status()
+ elements=response.json().get("elements",[]); saved=0; c=conn()
+ aliases={"target":"Target","walmart":"Walmart","best buy":"Best Buy","costco":"Costco","sam's club":"Sam's Club","sams club":"Sam's Club","walgreens":"Walgreens","dollar general":"Dollar General","barnes & noble":"Barnes & Noble","barnes and noble":"Barnes & Noble","hobby lobby":"Hobby Lobby","books-a-million":"Books-A-Million","gabe's":"Gabe's"}
+ for el in elements:
+  tags=el.get("tags",{}); raw=" ".join([tags.get("name",""),tags.get("brand",""),tags.get("operator","")]).strip()
+  key=raw.lower()
+  retailer=next((v for k,v in aliases.items() if k in key),None)
+  if not retailer: continue
+  p=el.get("center",el); y=p.get("lat"); x=p.get("lon")
+  if y is None or x is None: continue
+  dist=haversine(lat,lon,float(y),float(x))
+  if dist>RADIUS: continue
+  addr=", ".join(filter(None,[tags.get("addr:housenumber","")+" "+tags.get("addr:street","") if tags.get("addr:street") else None,tags.get("addr:city"),tags.get("addr:state"),tags.get("addr:postcode")]))
+  c.execute("""INSERT INTO stores(retailer,name,address,city,state,postcode,lat,lon,distance,source,source_url,checked_at)
+   VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(retailer,name,lat,lon) DO UPDATE SET address=excluded.address,
+   distance=excluded.distance,checked_at=excluded.checked_at""",
+   (retailer,raw or retailer,addr,tags.get("addr:city"),tags.get("addr:state"),tags.get("addr:postcode"),y,x,round(dist,1),"OpenStreetMap", "https://www.openstreetmap.org/"+el["type"]+"/"+str(el["id"]),now()))
+  saved+=1
+ c.commit(); c.close(); return saved
+def clean_url(u):
+ u=unquote(u or "")
+ if u.startswith("/url?"): u=parse_qs(urlparse(u).query).get("q",[""])[0]
+ p=urlparse(u)
+ if p.scheme not in ("http","https") or not p.netloc:return None
+ if p.hostname and ("google." in p.hostname or "bing.com" in p.hostname):return None
+ return urlunparse((p.scheme,p.netloc,p.path,"","",""))
+def search_products(retailer):
+ domain=RETAILERS[retailer][0]; q=f'site:{domain} Pokémon trading cards OR Pokémon TCG'
+ r=requests.get("https://www.google.com/search",params={"q":q,"num":20},headers=HEADERS,timeout=20); r.raise_for_status()
+ soup=BeautifulSoup(r.text,"html.parser"); found={}
+ for a in soup.select("a[href]"):
+  u=clean_url(a.get("href")); title=a.get_text(" ",strip=True)
+  if not u or not (urlparse(u).hostname or "").endswith(domain) or not title: continue
+  if not re.search(r"pokemon|pokémon|trading card|tcg",title,re.I): continue
+  found[u]=title[:250]
+ products=[]; c=conn()
+ for u,title in list(found.items())[:15]:
+  price=None; stock="unknown"; source="retailer search result"
+  try:
+   page=requests.get(u,headers=HEADERS,timeout=12); 
+   if page.ok:
+    s=BeautifulSoup(page.text,"html.parser")
+    og=s.find("meta",property="og:title")
+    if og and og.get("content"): title=og["content"][:250]
+    for sel in ['meta[property="product:price:amount"]','meta[itemprop="price"]']:
+     n=s.select_one(sel)
+     if n and n.get("content"): price=n["content"]; break
+    body=s.get_text(" ",strip=True).lower()
+    if re.search(r"out of stock|sold out|currently unavailable",body): stock="out_of_stock"
+    elif re.search(r"add to cart|in stock|available now",body): stock="in_stock"
+    source="retailer product page"
+  except requests.RequestException: pass
+  if not re.search(r"pokemon|pokémon|trading card|tcg",title,re.I): continue
+  t=now(); c.execute("""INSERT INTO products(retailer,title,url,price,availability,source,first_seen,last_seen)
+   VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(url) DO UPDATE SET title=excluded.title,price=COALESCE(excluded.price,products.price),
+   availability=excluded.availability,source=excluded.source,last_seen=excluded.last_seen""",(retailer,title,u,price,stock,source,t,t))
+  products.append({"retailer":retailer,"title":title,"url":u,"price":price,"availability":stock})
+ c.commit(); c.close(); return products
+def run_scan(kind):
+ c=conn(); cur=c.execute("INSERT INTO scan_runs(kind,started_at,status) VALUES(?,?,?)",(kind,now(),"running")); rid=cur.lastrowid;c.commit();c.close()
+ total=0; notes=[]
+ try:
+  if kind in ("all","stores"):
+   n=discover_stores();total+=n;notes.append(f"{n} physical store locations discovered")
+  if kind in ("all","products"):
+   for retailer in RETAILERS:
     try:
-        response = requests.get(url, headers=HEADERS, timeout=15, allow_redirects=True)
-        if response.status_code == 200 and "text/html" in response.headers.get("Content-Type", ""):
-            soup = BeautifulSoup(response.text, "html.parser")
-            og = soup.find("meta", property="og:title")
-            if og and og.get("content"):
-                title = og["content"].strip()[:300]
-            elif soup.title and soup.title.string:
-                title = soup.title.string.strip()[:300]
-            for selector in [
-                'meta[property="product:price:amount"]',
-                'meta[itemprop="price"]',
-                'meta[property="og:price:amount"]',
-            ]:
-                node = soup.select_one(selector)
-                if node and node.get("content"):
-                    price = node["content"].strip()
-                    break
-            body = soup.get_text(" ", strip=True).lower()
-            if re.search(r"\b(out of stock|sold out|currently unavailable|not available)\b", body):
-                availability = "out_of_stock"
-            elif re.search(r"\b(add to cart|ship it|pickup|in stock|available now)\b", body):
-                availability = "in_stock"
-            source = "product_page"
-    except requests.RequestException as exc:
-        log.info("Product page unavailable %s: %s", url, exc)
-    # Search snippets are supporting evidence only. Do not infer stock from a
-    # generic product listing or a search result with no explicit stock wording.
-    evidence = (fallback_snippet or "").lower()
-    if availability == "unknown":
-        if re.search(r"\b(out of stock|sold out|currently unavailable)\b", evidence):
-            availability = "out_of_stock"
-        elif re.search(r"\b(in stock|available now)\b", evidence):
-            availability = "in_stock"
-    return title or "Pokémon TCG listing", price, availability, source
-
-def save_product(retailer, item):
-    now = utcnow()
-    conn = db()
-    try:
-        conn.execute(
-            """INSERT INTO products
-            (retailer,title,url,price,availability,source,first_seen,last_seen,last_checked)
-            VALUES (?,?,?,?,?,?,?,?,?)
-            ON CONFLICT(url) DO UPDATE SET
-              retailer=excluded.retailer,
-              title=excluded.title,
-              price=COALESCE(excluded.price, products.price),
-              availability=excluded.availability,
-              source=excluded.source,
-              last_seen=excluded.last_seen,
-              last_checked=excluded.last_checked""",
-            (retailer, item["title"], item["url"], item.get("price"),
-             item["availability"], item["source"], now, now, now),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-def scan_retailer(retailer):
-    if retailer not in RETAILERS:
-        raise ValueError("Unknown retailer")
-    started = utcnow()
-    conn = db()
-    cur = conn.execute(
-        "INSERT INTO scan_runs(retailer,started_at,status) VALUES(?,?,?)",
-        (retailer, started, "running"),
-    )
-    run_id = cur.lastrowid
-    conn.commit()
-    conn.close()
-    found = 0
-    try:
-        domains = RETAILERS[retailer]
-        for term in SEARCH_TERMS:
-            query = f"site:{domains[0]} {term}"
-            for result in search_web(query):
-                url = result["url"]
-                if not belongs_to(url, domains):
-                    continue
-                # Skip obvious category/search pages where possible, but keep
-                # retailer product URLs even when the page cannot be parsed.
-                title, price, availability, source = page_details(
-                    url, result["title"], result["snippet"]
-                )
-                if not re.search(r"pokemon|pokémon|trading card|tcg", title + " " + result["snippet"], re.I):
-                    continue
-                save_product(retailer, {
-                    "title": title, "url": url, "price": price,
-                    "availability": availability, "source": source,
-                })
-                found += 1
-        conn = db()
-        conn.execute(
-            "UPDATE scan_runs SET finished_at=?,status=?,found=?,message=? WHERE id=?",
-            (utcnow(), "completed", found, "Scan finished; unknown means stock could not be verified.", run_id),
-        )
-        conn.commit()
-        conn.close()
-        return {"retailer": retailer, "status": "completed", "found": found}
-    except Exception as exc:
-        log.exception("Scan failed for %s", retailer)
-        conn = db()
-        conn.execute(
-            "UPDATE scan_runs SET finished_at=?,status=?,found=?,message=? WHERE id=?",
-            (utcnow(), "error", found, str(exc)[:500], run_id),
-        )
-        conn.commit()
-        conn.close()
-        return {"retailer": retailer, "status": "error", "found": found, "error": str(exc)}
-
+     n=len(search_products(retailer));total+=n;notes.append(f"{retailer}: {n} product pages")
+    except Exception as e: notes.append(f"{retailer}: {str(e)[:100]}")
+  msg="; ".join(notes); c=conn();c.execute("UPDATE scan_runs SET finished_at=?,status='completed',found=?,message=? WHERE id=?",(now(),total,msg,rid));c.commit();c.close()
+  return {"status":"completed","found":total,"message":msg}
+ except Exception as e:
+  log.exception("scan failed");c=conn();c.execute("UPDATE scan_runs SET finished_at=?,status='error',found=?,message=? WHERE id=?",(now(),total,str(e)[:500],rid));c.commit();c.close()
+  return {"status":"error","found":total,"message":str(e)},500
+HTML="""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PokeTrack Radar</title><style>
+:root{color-scheme:dark;--bg:#090e19;--panel:#121b2b;--line:#26364d;--muted:#9aabc2;--accent:#62d6c5;--gold:#f5c76b}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:#edf4ff;font:15px system-ui}header{padding:24px max(18px,calc((100% - 1240px)/2));background:#101a2a;border-bottom:1px solid var(--line)}h1{margin:0;font-size:26px}header p,.muted{color:var(--muted)}main{max-width:1240px;margin:auto;padding:20px}.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}.panel,.stat{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:14px}.stat b{font-size:25px;display:block}.toolbar{display:flex;gap:10px;flex-wrap:wrap;margin:12px 0}.toolbar input,.toolbar select,button{background:#1b2940;color:#fff;border:1px solid #3b506c;border-radius:9px;padding:11px}button{cursor:pointer;background:#176e68;border:0;font-weight:700}.tabs{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}.tabs button{background:#24344d}.tabs button.active{background:#176e68}.item{padding:12px 0;border-top:1px solid var(--line);display:flex;justify-content:space-between;gap:12px}.item a{color:var(--accent)}.pill{border:1px solid #465b74;border-radius:20px;padding:3px 8px;font-size:12px;white-space:nowrap}.ok{color:#8ee0a9}.warn{color:var(--gold)}@media(max-width:760px){.grid{grid-template-columns:repeat(2,1fr)}.item{display:block}.item .pill{display:inline-block;margin-top:6px}}
+</style></head><body><header><h1>⚡ PokeTrack Radar</h1><p>Physical store discovery · Pokémon product listings · Winchester, VA 22601 · 200-mile radius</p></header><main>
+<div class="grid"><div class="stat"><b id="stores">—</b><span class="muted">Physical stores found</span></div><div class="stat"><b id="products">—</b><span class="muted">Product listings</span></div><div class="stat"><b id="stock">—</b><span class="muted">Pages explicitly in stock</span></div><div class="stat"><b id="last">—</b><span class="muted">Last completed scan</span></div></div>
+<section class="panel"><h2>Radar controls</h2><p class="muted">Store locations come from OpenStreetMap. Product pages are online listings; stock is only marked when a retailer page exposes explicit availability. No shelf-level inventory or quantities are assumed.</p><div class="toolbar"><button onclick="scan('all')">Run full scan</button><button onclick="scan('stores')">Refresh store directory</button><button onclick="scan('products')">Scan product listings</button><span id="msg" class="muted">Ready</span></div></section>
+<div class="tabs"><button class="active" onclick="tab('stores',this)">Physical stores</button><button onclick="tab('products',this)">Product listings</button><button onclick="tab('history',this)">Scan history</button></div>
+<section class="panel"><div class="toolbar"><input id="q" placeholder="Filter by store, city, product…" oninput="draw()"><select id="retailer" onchange="draw()"><option value="">All retailers</option></select><select id="availability" onchange="draw()"><option value="">All availability</option><option value="in_stock">Explicitly in stock</option><option value="out_of_stock">Explicitly sold out</option><option value="unknown">Unknown</option></select></div><div id="list" class="muted">Loading…</div></section>
+<p class="muted">Store directory data © OpenStreetMap contributors. Product links open retailer websites. Availability can change and must be confirmed with the retailer.</p></main><script>
+let mode='stores',stores=[],products=[],history=[];function tab(m,b){mode=m;document.querySelectorAll('.tabs button').forEach(x=>x.classList.remove('active'));b.classList.add('active');draw()}
+async function load(){try{let [a,b,c,d]=await Promise.all(['/api/stores','/api/products','/api/history','/api/summary'].map(x=>fetch(x).then(r=>r.json())));stores=a.stores||[];products=b.products||[];history=c.runs||[];document.getElementById('stores').textContent=stores.length;document.getElementById('products').textContent=products.length;document.getElementById('stock').textContent=products.filter(x=>x.availability==='in_stock').length;document.getElementById('last').textContent=d.last_scan?new Date(d.last_scan).toLocaleString():'—';let opts=[...new Set([...stores,...products].map(x=>x.retailer))].sort();document.getElementById('retailer').innerHTML='<option value="">All retailers</option>'+opts.map(x=>'<option>'+esc(x)+'</option>').join('');draw()}catch(e){document.getElementById('list').textContent='Could not load dashboard data: '+e}}
+function esc(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+function draw(){let q=document.getElementById('q').value.toLowerCase(),r=document.getElementById('retailer').value,a=document.getElementById('availability').value;let rows=mode==='stores'?stores:mode==='products'?products:history;rows=rows.filter(x=>(!r||x.retailer===r)&&(!a||x.availability===a)&&JSON.stringify(x).toLowerCase().includes(q));document.getElementById('list').innerHTML=rows.length?rows.map(x=>mode==='stores'?'<div class="item"><div><b>'+esc(x.name)+'</b><div class="muted">'+esc(x.retailer)+' · '+esc(x.address||x.city||'Address not listed')+'</div><div class="muted">'+Number(x.distance).toFixed(1)+' miles from '+esc(x.zip||'22601')+' · <a href="'+esc(x.source_url)+'" target="_blank">Map/source</a></div></div><span class="pill">'+esc(x.source)+'</span></div>':mode==='products'?'<div class="item"><div><b><a href="'+esc(x.url)+'" target="_blank">'+esc(x.title)+'</a></b><div class="muted">'+esc(x.retailer)+' · '+esc(x.price||'Price not listed')+'</div></div><span class="pill">'+esc(x.availability)+'</span></div>':'<div class="item"><div><b>'+esc(x.kind)+' · '+esc(x.status)+'</b><div class="muted">'+esc(x.message)+'</div></div><span class="pill">'+esc(x.started_at)+'</span></div>').join(''):'<p class="muted">No matching records yet. Run a scan to populate this section.</p>'}
+async function scan(kind){let m=document.getElementById('msg');m.textContent='Scanning… this can take several minutes.';try{let r=await fetch('/api/scan?kind='+kind,{method:'POST'}),d=await r.json();m.textContent=d.message||d.error||'Scan finished';await load()}catch(e){m.textContent='Scan failed: '+e}}
+load();setInterval(load,60000);
+</script></body></html>"""
 @app.get("/")
-def index():
-    return jsonify({
-        "name": "PokeTrack",
-        "status": "online",
-        "start_zip": ZIP_CODE,
-        "radius_miles": RADIUS_MILES,
-        "retailers": list(RETAILERS),
-        "endpoints": ["/health", "/api/scan", "/api/scan-retailer?name=Target",
-                      "/api/products", "/api/retailer-status", "/api/history"],
-    })
-
+def index(): return render_template_string(HTML)
 @app.get("/health")
 def health():
-    try:
-        conn = db()
-        conn.execute("SELECT 1")
-        conn.close()
-        return jsonify({"ok": True, "time": utcnow()})
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 500
-
-@app.post("/api/scan")
-def scan_all():
-    # Optional shared secret protects scan endpoints when deployed publicly.
-    secret = os.getenv("SCAN_TOKEN")
-    if secret and request.headers.get("X-Scan-Token") != secret:
-        return jsonify({"error": "Unauthorized"}), 401
-    results = [scan_retailer(name) for name in RETAILERS]
-    return jsonify({"results": results, "total_found": sum(x["found"] for x in results)})
-
-@app.route("/api/scan-retailer", methods=["GET", "POST"])
-def scan_one():
-    secret = os.getenv("SCAN_TOKEN")
-    if secret and request.headers.get("X-Scan-Token") != secret:
-        return jsonify({"error": "Unauthorized"}), 401
-    name = request.args.get("name") or (request.json or {}).get("name")
-    if not name:
-        return jsonify({"error": "Pass retailer name in ?name=..."}), 400
-    try:
-        return jsonify(scan_retailer(name))
-    except ValueError as exc:
-        return jsonify({"error": str(exc), "retailers": list(RETAILERS)}), 400
-
+ try: c=conn();c.execute("SELECT 1");c.close();return jsonify(ok=True,service="PokeTrack")
+ except Exception as e:return jsonify(ok=False,error=str(e)),500
+@app.get("/api/stores")
+def api_stores():
+ c=conn();rows=[dict(x) for x in c.execute("SELECT * FROM stores ORDER BY distance,retailer")];c.close();return jsonify(stores=rows)
 @app.get("/api/products")
-def products():
-    conn = db()
-    retailer = request.args.get("retailer")
-    status = request.args.get("availability")
-    limit = min(max(int(request.args.get("limit", "500")), 1), 2000)
-    sql, params = "SELECT * FROM products WHERE 1=1", []
-    if retailer:
-        sql += " AND retailer=?"; params.append(retailer)
-    if status:
-        sql += " AND availability=?"; params.append(status)
-    sql += " ORDER BY last_checked DESC LIMIT ?"; params.append(limit)
-    rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
-    conn.close()
-    return jsonify({"count": len(rows), "products": rows})
-
-@app.get("/api/retailer-status")
-def retailer_status():
-    conn = db()
-    rows = conn.execute("""
-      SELECT retailer, MAX(started_at) AS last_started,
-             MAX(finished_at) AS last_finished,
-             (SELECT status FROM scan_runs s2 WHERE s2.retailer=s.retailer
-              ORDER BY id DESC LIMIT 1) AS status,
-             (SELECT found FROM scan_runs s3 WHERE s3.retailer=s.retailer
-              ORDER BY id DESC LIMIT 1) AS found
-      FROM scan_runs s GROUP BY retailer ORDER BY retailer
-    """).fetchall()
-    conn.close()
-    return jsonify({"retailers": [dict(r) for r in rows]})
-
+def api_products():
+ c=conn();rows=[dict(x) for x in c.execute("SELECT * FROM products ORDER BY last_seen DESC LIMIT 2000")];c.close();return jsonify(products=rows)
 @app.get("/api/history")
-def history():
-    conn = db()
-    rows = conn.execute("SELECT * FROM scan_runs ORDER BY id DESC LIMIT 200").fetchall()
-    conn.close()
-    return jsonify({"runs": [dict(r) for r in rows]})
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "8080")))
+def api_history():
+ c=conn();rows=[dict(x) for x in c.execute("SELECT * FROM scan_runs ORDER BY id DESC LIMIT 100")];c.close();return jsonify(runs=rows)
+@app.get("/api/summary")
+def summary():
+ c=conn();last=c.execute("SELECT finished_at FROM scan_runs WHERE status='completed' ORDER BY id DESC LIMIT 1").fetchone();c.close();return jsonify(last_scan=last[0] if last else None,zip=ZIP,radius=RADIUS)
+@app.post("/api/scan")
+def api_scan():
+ kind=request.args.get("kind","all")
+ if kind not in ("all","stores","products"):return jsonify(error="Invalid scan kind"),400
+ result=run_scan(kind)
+ if isinstance(result,tuple):return jsonify(result[0]),result[1]
+ return jsonify(result)
+if __name__=="__main__": app.run(host="0.0.0.0",port=int(os.getenv("PORT","8080")))
