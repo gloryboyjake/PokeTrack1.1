@@ -537,7 +537,7 @@ def search_products(retailer, progress_callback=None):
   "Pokemon Mega Evolution Pokemon TCG",
   "Pokemon trading card collection box"
  ]
-  for term_index,term in enumerate(search_terms,1):
+ for term_index,term in enumerate(search_terms,1):
   query=f"site:{domain} {term}"
   try:
    if progress_callback: progress_callback(0.24+0.08*term_index/len(search_terms),f"{retailer}: searching public product results {term_index}/{len(search_terms)}")
