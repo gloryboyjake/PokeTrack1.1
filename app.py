@@ -600,101 +600,54 @@ def inventory_status_from_product_page(page_text):
   return "in_stock",qty,(str(qty) if qty is not None else "count unavailable")
  return "unknown",None,"count unavailable"
 def scan_store_inventory():
- # No Google SERP scraping. Use Target's own public RedSky store/product fulfillment
- # endpoints where available; never convert a general online listing into store stock.
  c=conn()
  stores=[dict(x) for x in c.execute("SELECT * FROM stores ORDER BY retailer,distance")]
  products=[dict(x) for x in c.execute("SELECT * FROM products WHERE seller_verified=1 ORDER BY popularity_score DESC,last_seen DESC LIMIT 120")]
  checked=0; confirmed=0; unknown=0; errors=0; unsupported=0
- target_key=os.getenv("TARGET_REDSKY_KEY","ff457966e64d5e877fdbad070f276d18ecec4a01")
- session=requests.Session()
- session.headers.update({**HEADERS,"Origin":"https://www.target.com","Referer":"https://www.target.com/"})
- # Target publishes an official store-number directory. Use those stable store IDs
- # instead of the retired /v3/stores/nearby endpoint (which now returns HTTP 410).
- # Keys are ZIP codes; Sterling has two stores so its street address is checked too.
- target_store_ids={
-  "22601":"1234","22603":"2379","22630":"2297","25403":"2538",
-  "20176":"1874","21740":"1257","20155":"1873","20151":"1827",
-  "22033":"1341","22701":"2250","20190":"1088","20878":"1193",
-  "20876":"1046","17201":"2241","21704":"1137","20109":"2323",
- }
- def target_store_id(store):
-  postcode=str(store.get("postcode") or "")
-  sid=target_store_ids.get(postcode)
-  street=(store.get("address") or "").lower()
-  if postcode=="20166":
-   if "45130" in street or "columbia" in street: sid="2272"
-   elif "arcola" in street or "24670" in street: sid="2938"
-  if sid:
-   return sid
-  log.warning("No official Target store number mapped for %s (%s)",store.get("name"),postcode)
-  return None
- def target_fulfillment(tcin,store):
-  params={"key":target_key,"tcin":tcin,"store_id":store_id,"store_positions_store_id":store_id,
-          "has_store_positions_store_id":"true","zip":store.get("postcode",""),
-          "state":store.get("state",""),"latitude":store.get("lat"),"longitude":store.get("lon"),
-          "pricing_store_id":store_id,"has_pricing_store_id":"true","is_bot":"false"}
-  r=session.get("https://redsky.target.com/redsky_aggregations/v1/web/pdp_fulfillment_v1",params=params,timeout=18)
-  r.raise_for_status()
-  return r.json()
  for store in stores:
-  retailer=store["retailer"]
-  if retailer!="Target":
+  if store["retailer"]!="Target":
    unsupported+=1
-   detail="Branch-level stock endpoint not available in this Google-free scan. No online-only listing is counted as local stock."
+   detail="This retailer does not expose a supported branch-level stock source yet; online listings are not counted as local stock."
    c.execute("INSERT INTO store_inventory_checks(store_id,status,checked_at,detail) VALUES(?,?,?,?) ON CONFLICT(store_id) DO UPDATE SET status=excluded.status,checked_at=excluded.checked_at,detail=excluded.detail",(store["id"],"unsupported",now(),detail))
-   c.commit(); continue
-  store_id=target_store_id(store)
-  if not store_id:
-   errors+=1
-   detail="Target's store directory endpoint did not return a confidently matched branch; stock not inferred."
-   c.execute("INSERT INTO store_inventory_checks(store_id,status,checked_at,detail) VALUES(?,?,?,?) ON CONFLICT(store_id) DO UPDATE SET status=excluded.status,checked_at=excluded.checked_at,detail=excluded.detail",(store["id"],"error",now(),detail))
    c.commit(); continue
   branch_rows=[]; failures=0
   for product in products:
-   match=re.search(r"/A-(\d+)",product.get("url",""))
-   if not match: continue
-   tcin=match.group(1)
    try:
-    payload=target_fulfillment(tcin,store)
-    node=payload.get("data",{}).get("product",{}).get("fulfillment",{})
-    opts=node.get("store_options",[]) or []
-    status="unknown"; quantity=None; evidence="Target RedSky fulfillment response"
-    for opt in opts:
-     st=opt.get("store",{})
-     if str(st.get("location_id") or st.get("store_id") or "") not in ("",store_id): continue
-     inv=opt.get("in_store_only",{}).get("availability_status","")
-     pickup=opt.get("order_pickup",{}).get("availability_status","")
-     raw=(str(inv)+" "+str(pickup)).upper()
-     if "IN_STOCK" in raw or "LIMITED_STOCK" in raw:
-      status="in_stock"
-     elif "OUT_OF_STOCK" in raw or "NOT_SOLD" in raw or "UNAVAILABLE" in raw:
-      status="out_of_stock"
-     q=opt.get("in_store_only",{}).get("available_to_promise_quantity")
-     if q is None: q=opt.get("order_pickup",{}).get("available_to_promise_quantity")
-     if isinstance(q,(int,float)): quantity=int(q)
-     evidence=f"Target RedSky in-store={inv or 'unknown'}, pickup={pickup or 'unknown'}"
-     break
+    page=browser_get(product["url"],timeout=25,store=store)
+    if not page.ok: raise requests.HTTPError(f"Retailer page HTTP {page.status_code}")
+    soup=BeautifulSoup(page.text,"html.parser")
+    visible=re.sub(r"\\s+"," ",soup.get_text(" ",strip=True)).lower()
+    street=(store.get("address") or "").split(",")[0].lower()
+    street_token=street.split()[0] if street else ""
+    branch_name=(store.get("name") or "").lower()
+    zip_code=str(store.get("postcode") or "")
+    branch_context=(branch_name and branch_name in visible) or (street_token and street_token in visible and zip_code and zip_code in visible)
+    status,quantity,label=branch_stock_status(visible)
+    if not branch_context:
+     status="unknown"; quantity=None
+     evidence="Rendered product page did not visibly confirm this exact branch; stock left unknown"
+    else:
+     evidence=f"Rendered Target product page; branch context visible; {label}"
     branch_rows.append((product["url"],product["title"],status,quantity,evidence))
    except Exception as e:
     failures+=1
-    log.warning("Target fulfillment failed for %s at %s: %s",product.get("title"),store.get("name"),str(e)[:180])
+    log.warning("Target browser check failed for %s at %s: %s",product.get("title"),store.get("name"),str(e)[:180])
   if branch_rows:
    c.execute("DELETE FROM store_inventory WHERE store_id=?",(store["id"],))
   for url,title,status,quantity,evidence in branch_rows:
    checked_at=now()
-   label=(f"Target-reported units: {quantity}" if quantity is not None else "Target does not expose a unit count")
+   label=(f"Retailer-reported units: {quantity}" if quantity is not None else "Count unavailable")
    c.execute("""INSERT INTO store_inventory(store_id,product_url,product_title,status,quantity,quantity_label,source_url,detail,checked_at)
     VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(store_id,product_url) DO UPDATE SET product_title=excluded.product_title,status=excluded.status,quantity=excluded.quantity,quantity_label=excluded.quantity_label,source_url=excluded.source_url,detail=excluded.detail,checked_at=excluded.checked_at""",
     (store["id"],url,title,status,quantity,label,url,evidence,checked_at))
    if status=="in_stock": confirmed+=1
    elif status=="unknown": unknown+=1
   state_value="checked" if branch_rows and failures==0 else ("partial" if branch_rows else "error")
-  detail=f"Target RedSky direct store lookup for Target store ID {store_id}: {sum(1 for x in branch_rows if x[2]=='in_stock')} product(s) in stock; {len(branch_rows)} product(s) checked; {failures} request(s) failed."
+  detail=f"Chromium browser scan: {sum(1 for x in branch_rows if x[2]=='in_stock')} in stock; {len(branch_rows)} product pages visited; {failures} browser errors."
   c.execute("INSERT INTO store_inventory_checks(store_id,status,checked_at,detail) VALUES(?,?,?,?) ON CONFLICT(store_id) DO UPDATE SET status=excluded.status,checked_at=excluded.checked_at,detail=excluded.detail",(store["id"],state_value,now(),detail))
   c.commit(); checked+=1
  c.close()
- return {"confirmed_products":confirmed,"message":f"Google-free retailer API scan: {checked} Target branches checked; {confirmed} product/store listings in stock; {unknown} unknown; {errors} Target branch lookups failed; {unsupported} non-Target branches marked unsupported (not falsely counted)."}
+ return {"confirmed_products":confirmed,"message":f"Browser-based retailer scan: {checked} Target branches visited; {confirmed} confirmed product/store listings in stock; {unknown} unknown; {errors} branch errors; {unsupported} other retailer branches not yet supported."}
 
 def run_scan(kind):
  global JINA_CALLS
