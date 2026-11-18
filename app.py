@@ -447,6 +447,13 @@ def scavio_products_for_retailer(retailer,progress_callback=None):
   return []
  c=conn()
  cache_key="scavio_last_success_"+retailer.lower().replace(" ","_").replace("&","and")
+ attempt_key="scavio_last_attempt_"+retailer.lower().replace(" ","_").replace("&","and")
+ attempt=c.execute("SELECT value FROM settings WHERE key=?",(attempt_key,)).fetchone()
+ if attempt:
+  try:
+   if (datetime.now(timezone.utc)-datetime.fromisoformat(attempt["value"])).total_seconds()<SCAVIO_CACHE_HOURS*3600:
+    c.close(); return []
+  except Exception: pass
  row=c.execute("SELECT value FROM settings WHERE key=?",(cache_key,)).fetchone()
  if row:
   try:
@@ -455,7 +462,8 @@ def scavio_products_for_retailer(retailer,progress_callback=None):
     c.close()
     return []
   except Exception: pass
- c.close()
+ c.execute("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",(attempt_key,now()))
+ c.commit(); c.close()
  key=os.getenv("SCAVIO_API_KEY","").strip()
  if not key:
   return []
@@ -663,11 +671,19 @@ def scavio_target_inventory():
  if not os.getenv("SCAVIO_API_KEY","").strip(): return 0
  c=conn()
  cache=c.execute("SELECT value FROM settings WHERE key='scavio_target_inventory_last_success'").fetchone()
+ attempt=c.execute("SELECT value FROM settings WHERE key='scavio_target_inventory_last_attempt'").fetchone()
+ if attempt:
+  try:
+   if (datetime.now(timezone.utc)-datetime.fromisoformat(attempt["value"])).total_seconds()<SCAVIO_CACHE_HOURS*3600:
+    c.close(); return 0
+  except Exception: pass
  if cache:
   try:
    if (datetime.now(timezone.utc)-datetime.fromisoformat(cache["value"])).total_seconds()<SCAVIO_CACHE_HOURS*3600:
     c.close(); return 0
   except Exception: pass
+ c.execute("INSERT INTO settings(key,value) VALUES('scavio_target_inventory_last_attempt',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",(now(),))
+ c.commit()
  products=[dict(x) for x in c.execute("SELECT * FROM products WHERE retailer='Target' AND seller_verified=1 ORDER BY popularity_score DESC,last_seen DESC LIMIT 3")]
  c.close()
  checked=0
