@@ -1112,7 +1112,8 @@ def scan_store_inventory(progress_callback=None):
   c.commit(); checked+=1
  c.close()
  scavio_checked=scavio_target_inventory()
- return {"confirmed_products":confirmed,"message":f"Browser-based retailer scan: {checked} Target branches visited; {confirmed} confirmed product/store listings in stock; {unknown} unknown; {errors} branch errors; {unsupported} other retailer branches not yet supported. Scavio Target availability refreshed for {scavio_checked} products."}
+ partner_checked=scavio_refresh_partner_inventory()
+ return {"confirmed_products":confirmed,"message":f"Browser-based retailer scan: {checked} Target branches visited; {confirmed} confirmed product/store listings in stock; {unknown} unknown; {errors} branch errors; {unsupported} other retailer branches not yet supported. Scavio Target availability refreshed for {scavio_checked} products; partner inventory rows updated: {partner_checked}."}
 
 def update_scan_progress(run_id, progress, phase, current=0, total=0):
  c=conn()
