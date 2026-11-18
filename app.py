@@ -278,14 +278,14 @@ def direct_catalog_url(retailer):
  urls={
   "Target":"https://www.target.com/c/trading-card-games-cards-toys/pokemon/-/N-d4gjqZ569t0",
   "Walmart":"https://www.walmart.com/cp/pokemon/3580439",
-  "Walgreens":"https://www.walgreens.com/q/all-pokemon-cards",
+  "Walgreens":"https://www.walgreens.com/store/c/productlist/N%3D2672-310687-9000160368",
   "Best Buy":"https://www.bestbuy.com/site/pokemon/pokemon-trading-cards/pcmcat1741200145801.c",
-  "Barnes & Noble":"https://www.barnesandnoble.com/s/pokemon",
+  "Barnes & Noble":"https://www.barnesandnoble.com/collections/toys-games/games/collectible-card-games-1",
   "Costco":"https://www.costco.com/CatalogSearch?keyword=pokemon",
   "Sam's Club":"https://www.samsclub.com/browse/Pokemon/16860219",
   "Dollar General":"https://www.dollargeneral.com/c/toys?page=4",
   "Hobby Lobby":"https://www.hobbylobby.com/search/?q=pokemon",
-  "Books-A-Million":"https://www.booksamillion.com/search?query=pokemon",
+  "Books-A-Million":"https://www.booksamillion.com/search?query=pokemon+trading+cards",
   "Gabe's":"https://www.gabesstores.com/",
   "Amazon":"https://www.amazon.com/s?k=pokemon+trading+cards"
  }
@@ -399,6 +399,7 @@ def tracker_candidates(retailer):
 SEED_PRODUCT_URLS={
  "Target":["https://www.target.com/p/-/A-1010892076","https://www.target.com/p/-/A-1011483406"],
  "Walmart":["https://www.walmart.com/ip/15718673510","https://www.walmart.com/ip/20161351456","https://www.walmart.com/ip/20754418655","https://business.walmart.com/ip/POKEMON-SV10-DESTINED-RIVALS-D7-ELITE-TRAINER-BOX/19965460207"],
+ "Dollar General":["https://www.dollargeneral.com/p/pok%25c3%25a9mon-trading-card-pack%2C-10-ct/728192507076"],
  "Best Buy":[
   "https://www.bestbuy.com/product/pokemon-trading-card-game-30th-celebration-elite-trainer-box/JJG2TL8XCJ",
   "https://www.bestbuy.com/product/pokemon-trading-card-game-mega-evolution-pitch-black-elite-trainer-box/JJG2TL8J45",
@@ -599,12 +600,9 @@ def search_products(retailer, progress_callback=None):
  # fetched below and must pass the Pokémon TCG and seller checks before saving.
  ddg_terms=[
   "Pokemon trading card game",
-  "Pokemon elite trainer box",
-  "Pokemon booster bundle",
-  "Pokemon collection box tin blister",
-  "Pokemon 30th celebration trading cards",
-  "Pokemon Mega Evolution TCG"
- ]
+  "Pokemon elite trainer box booster bundle",
+  "Pokemon 30th celebration Mega Evolution TCG"
+ ] if len(found)<10 else []
  for term_index,term in enumerate(ddg_terms,1):
   query=f"site:{domain} {term}"
   try:
