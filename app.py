@@ -1,6 +1,6 @@
 import os, re, json, math, time, sqlite3, logging, threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from urllib.parse import urlparse, urlunparse, parse_qs, unquote
 import requests
 try:
@@ -179,6 +179,10 @@ CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS store_inventory(id INTEGER PRIMARY KEY,store_id INTEGER NOT NULL,product_url TEXT NOT NULL,product_title TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'unknown',quantity INTEGER,quantity_label TEXT NOT NULL DEFAULT 'count unavailable',source_url TEXT,detail TEXT,checked_at TEXT NOT NULL,UNIQUE(store_id,product_url));
 CREATE TABLE IF NOT EXISTS store_inventory_checks(store_id INTEGER PRIMARY KEY,status TEXT NOT NULL,checked_at TEXT NOT NULL,detail TEXT);
 CREATE TABLE IF NOT EXISTS retailer_scan_status(retailer TEXT PRIMARY KEY,status TEXT NOT NULL,checked_at TEXT NOT NULL,product_count INTEGER NOT NULL DEFAULT 0,detail TEXT NOT NULL DEFAULT '');
+CREATE TABLE IF NOT EXISTS product_stock_history(id INTEGER PRIMARY KEY,product_id INTEGER NOT NULL,checked_at TEXT NOT NULL,status TEXT NOT NULL,price TEXT,source TEXT NOT NULL DEFAULT 'retailer product page',evidence TEXT NOT NULL DEFAULT '');
+CREATE INDEX IF NOT EXISTS idx_product_stock_history_product_time ON product_stock_history(product_id,checked_at DESC);
+CREATE TABLE IF NOT EXISTS restock_events(id INTEGER PRIMARY KEY,product_id INTEGER NOT NULL,retailer TEXT NOT NULL,title TEXT NOT NULL,url TEXT NOT NULL,detected_at TEXT NOT NULL,previous_status TEXT NOT NULL,current_status TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS product_requests(id INTEGER PRIMARY KEY,product_title TEXT NOT NULL,retailer TEXT,product_url TEXT,notes TEXT,status TEXT NOT NULL DEFAULT 'pending',created_at TEXT NOT NULL);
 """
 def now(): return datetime.now(timezone.utc).isoformat()
 def conn():
@@ -201,11 +205,13 @@ def conn():
     for name,decl in [("progress","INTEGER NOT NULL DEFAULT 0"),("phase","TEXT NOT NULL DEFAULT ''"),("current","INTEGER NOT NULL DEFAULT 0"),("total","INTEGER NOT NULL DEFAULT 0")]:
      if name not in scan_cols: c.execute(f"ALTER TABLE poketrack_scan_runs ADD COLUMN {name} {decl}")
     cols={r[1] for r in c.execute("PRAGMA table_info(products)")}
-    for name,decl in [("last_checked","TEXT NOT NULL DEFAULT ''"),("seller_verified","INTEGER NOT NULL DEFAULT 0"),("seller_name","TEXT"),("popularity_score","INTEGER NOT NULL DEFAULT 0"),("popularity_reason","TEXT"),("discovery_sources","TEXT"),("stock_checked_at","TEXT")]:
+    for name,decl in [("last_checked","TEXT NOT NULL DEFAULT ''"),("seller_verified","INTEGER NOT NULL DEFAULT 0"),("seller_name","TEXT"),("popularity_score","INTEGER NOT NULL DEFAULT 0"),("popularity_reason","TEXT"),("discovery_sources","TEXT"),("stock_checked_at","TEXT"),("monitor_enabled","INTEGER NOT NULL DEFAULT 1"),("check_interval_seconds","INTEGER NOT NULL DEFAULT 1800"),("next_check_at","TEXT"),("last_status_change","TEXT")]:
      if name not in cols: c.execute(f"ALTER TABLE products ADD COLUMN {name} {decl}")
     # A worker thread cannot survive a Railway container restart. Close stale
     # running rows so the dashboard never displays a permanently frozen scan.
     c.execute("UPDATE poketrack_scan_runs SET status='interrupted',finished_at=?,phase='Interrupted by service restart' WHERE status='running'",(now(),))
+    stamp=now()
+    c.execute("UPDATE products SET check_interval_seconds=CASE WHEN popularity_score>=25 THEN 300 WHEN popularity_score>=15 THEN 600 ELSE 1800 END,next_check_at=CASE WHEN next_check_at IS NULL OR next_check_at='' THEN ? ELSE next_check_at END WHERE seller_verified=1",(stamp,))
     c.commit()
     DB_READY=True
  else:
