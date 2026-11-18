@@ -179,12 +179,19 @@ CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS store_inventory(id INTEGER PRIMARY KEY,store_id INTEGER NOT NULL,product_url TEXT NOT NULL,product_title TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'unknown',quantity INTEGER,quantity_label TEXT NOT NULL DEFAULT 'count unavailable',source_url TEXT,detail TEXT,checked_at TEXT NOT NULL,UNIQUE(store_id,product_url));
 CREATE TABLE IF NOT EXISTS store_inventory_checks(store_id INTEGER PRIMARY KEY,status TEXT NOT NULL,checked_at TEXT NOT NULL,detail TEXT);
 CREATE TABLE IF NOT EXISTS retailer_scan_status(retailer TEXT PRIMARY KEY,status TEXT NOT NULL,checked_at TEXT NOT NULL,product_count INTEGER NOT NULL DEFAULT 0,detail TEXT NOT NULL DEFAULT '');
+CREATE TABLE IF NOT EXISTS product_catalog(id INTEGER PRIMARY KEY,title TEXT NOT NULL,normalized_title TEXT NOT NULL UNIQUE,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,track_all INTEGER NOT NULL DEFAULT 1);
 CREATE TABLE IF NOT EXISTS product_stock_history(id INTEGER PRIMARY KEY,product_id INTEGER NOT NULL,checked_at TEXT NOT NULL,status TEXT NOT NULL,price TEXT,source TEXT NOT NULL DEFAULT 'retailer product page',evidence TEXT NOT NULL DEFAULT '');
 CREATE INDEX IF NOT EXISTS idx_product_stock_history_product_time ON product_stock_history(product_id,checked_at DESC);
 CREATE TABLE IF NOT EXISTS restock_events(id INTEGER PRIMARY KEY,product_id INTEGER NOT NULL,retailer TEXT NOT NULL,title TEXT NOT NULL,url TEXT NOT NULL,detected_at TEXT NOT NULL,previous_status TEXT NOT NULL,current_status TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS product_requests(id INTEGER PRIMARY KEY,product_title TEXT NOT NULL,retailer TEXT,product_url TEXT,notes TEXT,status TEXT NOT NULL DEFAULT 'pending',created_at TEXT NOT NULL);
 """
 def now(): return datetime.now(timezone.utc).isoformat()
+def normalize_product_title(title):
+ value=(title or "").lower()
+ value=re.sub(r"\s*[|–—-]\s*(target|walmart|best buy|costco|walgreens|barnes\s*&\s*noble|sam'?s club)(?:\.com)?\s*$","",value)
+ value=re.sub(r"[^a-z0-9]+"," ",value)
+ return re.sub(r"\s+"," ",value).strip()[:240]
+
 def conn():
  global DB_READY
  os.makedirs(os.path.dirname(DB_PATH) or ".",exist_ok=True)
@@ -205,13 +212,19 @@ def conn():
     for name,decl in [("progress","INTEGER NOT NULL DEFAULT 0"),("phase","TEXT NOT NULL DEFAULT ''"),("current","INTEGER NOT NULL DEFAULT 0"),("total","INTEGER NOT NULL DEFAULT 0")]:
      if name not in scan_cols: c.execute(f"ALTER TABLE poketrack_scan_runs ADD COLUMN {name} {decl}")
     cols={r[1] for r in c.execute("PRAGMA table_info(products)")}
-    for name,decl in [("last_checked","TEXT NOT NULL DEFAULT ''"),("seller_verified","INTEGER NOT NULL DEFAULT 0"),("seller_name","TEXT"),("popularity_score","INTEGER NOT NULL DEFAULT 0"),("popularity_reason","TEXT"),("discovery_sources","TEXT"),("stock_checked_at","TEXT"),("monitor_enabled","INTEGER NOT NULL DEFAULT 1"),("check_interval_seconds","INTEGER NOT NULL DEFAULT 1800"),("next_check_at","TEXT"),("last_status_change","TEXT")]:
+    for name,decl in [("last_checked","TEXT NOT NULL DEFAULT ''"),("seller_verified","INTEGER NOT NULL DEFAULT 0"),("seller_name","TEXT"),("popularity_score","INTEGER NOT NULL DEFAULT 0"),("popularity_reason","TEXT"),("discovery_sources","TEXT"),("stock_checked_at","TEXT"),("monitor_enabled","INTEGER NOT NULL DEFAULT 1"),("check_interval_seconds","INTEGER NOT NULL DEFAULT 1800"),("next_check_at","TEXT"),("last_status_change","TEXT"),("catalog_product_id","INTEGER")]:
      if name not in cols: c.execute(f"ALTER TABLE products ADD COLUMN {name} {decl}")
     # A worker thread cannot survive a Railway container restart. Close stale
     # running rows so the dashboard never displays a permanently frozen scan.
     c.execute("UPDATE poketrack_scan_runs SET status='interrupted',finished_at=?,phase='Interrupted by service restart' WHERE status='running'",(now(),))
     stamp=now()
     c.execute("UPDATE products SET check_interval_seconds=CASE WHEN popularity_score>=25 THEN 300 WHEN popularity_score>=15 THEN 600 ELSE 1800 END,next_check_at=CASE WHEN next_check_at IS NULL OR next_check_at='' THEN ? ELSE next_check_at END WHERE seller_verified=1",(stamp,))
+    for listing in c.execute("SELECT id,title FROM products WHERE catalog_product_id IS NULL").fetchall():
+     normalized=normalize_product_title(listing["title"])
+     if not normalized: continue
+     c.execute("INSERT OR IGNORE INTO product_catalog(title,normalized_title,created_at,updated_at) VALUES(?,?,?,?)",(listing["title"],normalized,stamp,stamp))
+     catalog=c.execute("SELECT id FROM product_catalog WHERE normalized_title=?",(normalized,)).fetchone()
+     if catalog: c.execute("UPDATE products SET catalog_product_id=? WHERE id=?",(catalog["id"],listing["id"]))
     c.commit()
     DB_READY=True
  else:
