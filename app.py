@@ -887,7 +887,7 @@ def run_scan(kind):
    update_scan_progress(rid,1,"Discovering physical store locations",0,1)
    n=discover_stores();total+=n;notes.append(f"{n} physical store locations discovered")
    update_scan_progress(rid,10 if kind=="all" else 95,"Physical store directory refreshed",1,1)
-  if kind in ("all","products"):
+  if kind in ("all","products","discover"):
    retailer_names=list(RETAILERS)
    for idx,retailer in enumerate(retailer_names,1):
     phase_pct=(10+int(idx*60/len(retailer_names))) if kind=="all" else int(idx*95/len(retailer_names))
@@ -921,6 +921,10 @@ def run_scan(kind):
     pct=base+int(span*current/max(1,work_total))
     update_scan_progress(rid,pct,phase,current,work_total)
    result=scan_store_inventory(progress_callback=inventory_progress);total+=result["confirmed_products"];notes.append(result["message"])
+  if kind in ("all","monitor"):
+   update_scan_progress(rid,92,"Checking due verified product listings",0,1)
+   monitor_result=monitor_due_products()
+   total+=monitor_result["checked"]; notes.append(monitor_result["message"])
   msg="; ".join(notes)
   final_status="partial" if retailer_failures else "completed"
   final_phase="Completed with retailer errors" if retailer_failures else "Completed"
@@ -975,6 +979,27 @@ def api_inventory():
 @app.get("/api/products")
 def api_products():
  c=conn();rows=[dict(x) for x in c.execute("SELECT * FROM products ORDER BY seller_verified DESC,popularity_score DESC,last_seen DESC LIMIT 2000")];c.close();return jsonify(products=rows)
+@app.get("/api/restock-events")
+def api_restock_events():
+ c=conn();rows=[dict(x) for x in c.execute("SELECT * FROM restock_events ORDER BY id DESC LIMIT 200")];c.close();return jsonify(events=rows)
+
+@app.get("/api/product-requests")
+def api_product_requests():
+ c=conn();rows=[dict(x) for x in c.execute("SELECT * FROM product_requests ORDER BY id DESC LIMIT 200")];c.close();return jsonify(requests=rows)
+
+@app.post("/api/product-requests")
+def create_product_request():
+ payload=request.get_json(silent=True) or {}
+ title=re.sub(r"\s+"," ",str(payload.get("product_title") or "")).strip()[:250]
+ retailer=str(payload.get("retailer") or "").strip()[:80] or None
+ url=str(payload.get("product_url") or "").strip()[:1000] or None
+ notes=str(payload.get("notes") or "").strip()[:1000] or None
+ if not title: return jsonify(error="product_title is required"),400
+ if url:
+  parsed=urlparse(url)
+  if parsed.scheme not in ("http","https") or not parsed.netloc: return jsonify(error="product_url must be an http(s) URL"),400
+ c=conn();cur=c.execute("INSERT INTO product_requests(product_title,retailer,product_url,notes,created_at) VALUES(?,?,?,?,?)",(title,retailer,url,notes,now()));c.commit();request_id=cur.lastrowid;c.close()
+ return jsonify(status="queued",request_id=request_id),201
 @app.get("/api/history")
 def api_history():
  c=conn();rows=[dict(x) for x in c.execute("SELECT * FROM poketrack_scan_runs ORDER BY id DESC LIMIT 100")];c.close();return jsonify(runs=rows)
@@ -984,7 +1009,7 @@ def summary():
 @app.post("/api/scan")
 def api_scan():
  kind=request.args.get("kind","all")
- if kind not in ("all","stores","products","inventory"):return jsonify(error="Invalid scan kind"),400
+ if kind not in ("all","stores","products","inventory","monitor","discover"):return jsonify(error="Invalid scan kind"),400
  if not SCAN_LOCK.acquire(blocking=False):
   return jsonify({"status":"busy","message":"A scan is already running. Please wait for it to finish."}),409
  SCAN_LOCK.release()
