@@ -706,13 +706,16 @@ def search_products(retailer, progress_callback=None, max_candidates=None):
    log.info("%s verified: %s | online=%s | price=%s",retailer,title[:100],stock,price)
    score,reason=popularity_for(title,verification_text)
    t=now()
-   c.execute("""INSERT INTO products(retailer,title,url,price,availability,source,first_seen,last_seen,last_checked,seller_verified,seller_name,popularity_score,popularity_reason,discovery_sources,stock_checked_at)
-    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(url) DO UPDATE SET title=excluded.title,
+   interval=product_check_interval(score)
+   next_due=(datetime.now(timezone.utc)+timedelta(seconds=interval)).isoformat()
+   c.execute("""INSERT INTO products(retailer,title,url,price,availability,source,first_seen,last_seen,last_checked,seller_verified,seller_name,popularity_score,popularity_reason,discovery_sources,stock_checked_at,check_interval_seconds,next_check_at)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(url) DO UPDATE SET title=excluded.title,
     price=COALESCE(excluded.price,products.price),seller_verified=1,seller_name=excluded.seller_name,
     popularity_score=excluded.popularity_score,popularity_reason=excluded.popularity_reason,
     availability=excluded.availability,source=excluded.source,last_seen=excluded.last_seen,
-    last_checked=excluded.last_checked,discovery_sources=excluded.discovery_sources,stock_checked_at=excluded.stock_checked_at""",
-    (retailer,title,u,price,stock,"retailer product page",t,t,t,1,seller,score,reason,"Retailer catalog/sitemap + Bing RSS + DuckDuckGo + curated seeds",t))
+    last_checked=excluded.last_checked,discovery_sources=excluded.discovery_sources,stock_checked_at=excluded.stock_checked_at,
+    check_interval_seconds=excluded.check_interval_seconds,next_check_at=excluded.next_check_at""",
+    (retailer,title,u,price,stock,"retailer product page",t,t,t,1,seller,score,reason,"Retailer catalog/sitemap + Bing RSS + DuckDuckGo + curated seeds",t,interval,next_due))
    products.append({"retailer":retailer,"title":title,"url":u,"price":price,"availability":stock,"seller":seller,"seller_verified":True,"popularity_score":score,"popularity_reason":reason})
   except Exception as e:
    log.warning("Retailer product page parse failed for %s (%s): %s",retailer,u,e)
