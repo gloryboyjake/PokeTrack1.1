@@ -1,0 +1,59 @@
+name: Retailer product discovery test
+
+on:
+  pull_request:
+    branches: [rebuild/clean-start]
+  workflow_dispatch:
+
+jobs:
+  live-product-discovery:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DB_PATH: /tmp/poketrack-live-test.db
+      LOG_LEVEL: INFO
+    steps:
+      - name: Check out feature branch
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install scanner dependencies
+        run: python -m pip install --disable-pip-version-check Flask requests beautifulsoup4 curl_cffi
+      - name: Run bounded live retailer discovery
+        run: |
+          python - <<'PY'
+          import app
+          import json
+          import sys
+          results = []
+          failures = []
+          for retailer in app.RETAILERS:
+              print(f"\\n===== {retailer} =====", flush=True)
+              try:
+                  products = app.search_products(retailer, max_candidates=12)
+                  results.append({
+                      "retailer": retailer,
+                      "verified_products": len(products),
+                      "products": [
+                          {
+                              "title": p["title"],
+                              "url": p["url"],
+                              "seller": p["seller"],
+                              "availability": p["availability"]
+                          }
+                          for p in products
+                      ]
+                  })
+                  print(f"RESULT {retailer}: {len(products)} first-party verified product(s)", flush=True)
+              except Exception as exc:
+                  failures.append({"retailer": retailer, "error": str(exc)})
+                  print(f"ERROR {retailer}: {exc}", flush=True)
+          print("\\n===== SUMMARY =====")
+          print(json.dumps({"results": results, "failures": failures}, indent=2))
+          with open("/tmp/poketrack-discovery-results.json", "w") as f:
+              json.dump({"results": results, "failures": failures}, f, indent=2)
+          if failures or not any(r["verified_products"] for r in results):
+              sys.exit(1)
+          PY
