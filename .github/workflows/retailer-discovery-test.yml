@@ -29,6 +29,11 @@ jobs:
           import app
           import json
           import sys
+          assert app.is_pokemon_tcg_title("Pokémon Mega Evolution Phantasmal Flames Elite Trainer Box")
+          assert app.is_pokemon_tcg_title("Pokémon Scarlet & Violet Booster Bundle")
+          assert not app.is_pokemon_tcg_title("Pokémon Classic Story Collection Box Set, Paperback")
+          assert not app.is_pokemon_tcg_title("Pokémon plush figure")
+          print("TCG title-filter checks passed", flush=True)
           results = []
           failures = []
           for retailer in app.RETAILERS:
@@ -37,18 +42,21 @@ jobs:
                   products = app.search_products(retailer)
                   results.append({
                       "retailer": retailer,
-                      "verified_products": len(products),
+                      "discovered_listings": len(products),
+                      "first_party_verified": sum(1 for p in products if p.get("seller_verified")),
+                      "unverified_or_blocked": sum(1 for p in products if not p.get("seller_verified")),
                       "products": [
                           {
                               "title": p["title"],
                               "url": p["url"],
                               "seller": p["seller"],
+                              "seller_verified": p.get("seller_verified", False),
                               "availability": p["availability"]
                           }
                           for p in products
                       ]
                   })
-                  print(f"RESULT {retailer}: {len(products)} first-party verified product(s)", flush=True)
+                  print(f"RESULT {retailer}: {len(products)} discovered; {sum(1 for p in products if p.get('seller_verified'))} first-party verified; {sum(1 for p in products if not p.get('seller_verified'))} unverified/blocked", flush=True)
               except Exception as exc:
                   failures.append({"retailer": retailer, "error": str(exc)})
                   print(f"ERROR {retailer}: {exc}", flush=True)
@@ -56,6 +64,6 @@ jobs:
           print(json.dumps({"results": results, "failures": failures}, indent=2))
           with open("/tmp/poketrack-discovery-results.json", "w") as f:
               json.dump({"results": results, "failures": failures}, f, indent=2)
-          if failures or not any(r["verified_products"] for r in results):
+          if failures or not any(r["discovered_listings"] for r in results):
               sys.exit(1)
           PY
