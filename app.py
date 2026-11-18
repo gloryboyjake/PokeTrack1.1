@@ -201,7 +201,7 @@ def conn():
     for name,decl in [("progress","INTEGER NOT NULL DEFAULT 0"),("phase","TEXT NOT NULL DEFAULT ''"),("current","INTEGER NOT NULL DEFAULT 0"),("total","INTEGER NOT NULL DEFAULT 0")]:
      if name not in scan_cols: c.execute(f"ALTER TABLE poketrack_scan_runs ADD COLUMN {name} {decl}")
     cols={r[1] for r in c.execute("PRAGMA table_info(products)")}
-    for name,decl in [("last_checked","TEXT NOT NULL DEFAULT ''"),("seller_verified","INTEGER NOT NULL DEFAULT 0"),("seller_name","TEXT"),("popularity_score","INTEGER NOT NULL DEFAULT 0"),("popularity_reason","TEXT"),("discovery_sources","TEXT"),("stock_checked_at","TEXT")]:
+    for name,decl in [("last_checked","TEXT NOT NULL DEFAULT ''"),("seller_verified","INTEGER NOT NULL DEFAULT 0"),("seller_name","TEXT"),("popularity_score","INTEGER NOT NULL DEFAULT 0"),("popularity_reason","TEXT"),("discovery_sources","TEXT"),("stock_checked_at","TEXT"),("scavio_item_id","TEXT"),("scavio_upc","TEXT")]:
      if name not in cols: c.execute(f"ALTER TABLE products ADD COLUMN {name} {decl}")
     # A worker thread cannot survive a Railway container restart. Close stale
     # running rows so the dashboard never displays a permanently frozen scan.
@@ -419,6 +419,8 @@ def retailer_product_url_is_valid(retailer,url):
 
 SCAVIO_BASE_URL="https://api.scavio.dev"
 SCAVIO_CACHE_HOURS=9
+SCAVIO_MAX_PRODUCTS_PER_RETAILER=3
+SCAVIO_MAX_SAMS_CLUBS=3
 SCAVIO_QUERIES=("Pokemon TCG","Pokemon trading cards")
 def scavio_post(path,payload,timeout=90):
  key=os.getenv("SCAVIO_API_KEY","").strip()
@@ -480,6 +482,8 @@ def scavio_products_for_retailer(retailer,progress_callback=None):
     warehouse_data=scavio_post("/api/v1/costco/warehouses",{"zip":ZIP,"limit":10})
     warehouses=(warehouse_data or {}).get("data",{}).get("warehouses",[])
     nearest_id=str(warehouses[0].get("warehouse_id")) if warehouses else ""
+    if warehouses:
+     c=conn(); c.execute("INSERT INTO settings(key,value) VALUES('scavio_costco_warehouses',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",(json.dumps(warehouses[:10]),)); c.commit(); c.close()
     payload={"query":"Pokemon trading cards","country":"us","page":1,"page_size":48}
     if nearest_id: payload["warehouse_id"]=nearest_id
    else:
@@ -525,14 +529,17 @@ def scavio_products_for_retailer(retailer,progress_callback=None):
    else: stock="unknown"
    score,reason=popularity_for(title,json.dumps(item,ensure_ascii=False))
    stamp=now()
-   c.execute("""INSERT INTO products(retailer,title,url,price,availability,source,first_seen,last_seen,last_checked,seller_verified,seller_name,popularity_score,popularity_reason,discovery_sources,stock_checked_at)
-    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(url) DO UPDATE SET title=excluded.title,
+   item_id=item.get("item_number") or item.get("item_id") or item.get("sku") or item.get("product_id")
+   upc=item.get("upc") or item.get("UPC") or item.get("barcode")
+   c.execute("""INSERT INTO products(retailer,title,url,price,availability,source,first_seen,last_seen,last_checked,seller_verified,seller_name,popularity_score,popularity_reason,discovery_sources,stock_checked_at,scavio_item_id,scavio_upc)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(url) DO UPDATE SET title=excluded.title,
     price=COALESCE(excluded.price,products.price),availability=excluded.availability,
     last_seen=excluded.last_seen,last_checked=excluded.last_checked,
     seller_verified=1,seller_name=excluded.seller_name,popularity_score=excluded.popularity_score,
     popularity_reason=excluded.popularity_reason,discovery_sources=excluded.discovery_sources,
-    stock_checked_at=excluded.stock_checked_at""",
-    (retailer,title,url,price,stock,"Scavio API",stamp,stamp,stamp,1,seller or (retailer if retailer!="Target" else "Target (first-party flag)"),score,reason,"Scavio retailer search API",stamp))
+    stock_checked_at=excluded.stock_checked_at,scavio_item_id=COALESCE(excluded.scavio_item_id,products.scavio_item_id),
+    scavio_upc=COALESCE(excluded.scavio_upc,products.scavio_upc)""",
+    (retailer,title,url,price,stock,"Scavio API",stamp,stamp,stamp,1,seller or (retailer if retailer!="Target" else "Target (first-party flag)"),score,reason,"Scavio retailer search API",stamp,str(item_id) if item_id else None,str(upc) if upc else None))
    found.append({"retailer":retailer,"title":title,"url":url,"price":price,"availability":stock,"seller":seller or retailer,"popularity_score":score,"popularity_reason":reason})
   c.execute("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",(cache_key,now()))
   c.commit(); c.close()
@@ -544,6 +551,111 @@ def scavio_products_for_retailer(retailer,progress_callback=None):
   log.exception("Scavio integration failed for %s: %s",retailer,str(e)[:200])
   return []
 
+
+
+def scavio_inventory_status(value,quantity=None):
+ if isinstance(quantity,(int,float)): return "in_stock" if quantity>0 else "out_of_stock"
+ if value is True: return "in_stock"
+ if value is False: return "out_of_stock"
+ if isinstance(value,str):
+  v=value.strip().lower()
+  if any(x in v for x in ("in_stock","available","instock")): return "in_stock"
+  if any(x in v for x in ("out_of_stock","unavailable","sold_out","out of stock")): return "out_of_stock"
+ return "unknown"
+
+def scavio_upsert_store(db,retailer,item):
+ name=str(item.get("name") or item.get("warehouse_name") or item.get("club_name") or retailer).strip()
+ address=str(item.get("address") or item.get("formatted_address") or "").strip()
+ city=str(item.get("city") or "").strip()
+ state=str(item.get("state") or "VA").strip()
+ postcode=str(item.get("zip") or item.get("postal_code") or ZIP).strip()
+ lat=item.get("latitude") or item.get("lat"); lon=item.get("longitude") or item.get("lon") or item.get("lng")
+ if lat is None or lon is None: return None
+ try: lat=float(lat); lon=float(lon)
+ except (TypeError,ValueError): return None
+ ext=str(item.get("warehouse_id") or item.get("club_id") or item.get("store_id") or "")
+ row=db.execute("SELECT id FROM stores WHERE retailer=? AND ((source_url=? AND source='Scavio') OR (name=? AND lat=? AND lon=?)) LIMIT 1",(retailer,ext,name,lat,lon)).fetchone()
+ if row: return row["id"]
+ db.execute("INSERT OR IGNORE INTO stores(retailer,name,address,city,state,postcode,lat,lon,distance,source,source_url,checked_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",(retailer,name,address,city,state,postcode,lat,lon,float(item.get("distance_miles") or item.get("distance") or 0),"Scavio",ext,now()))
+ row=db.execute("SELECT id FROM stores WHERE retailer=? AND name=? AND lat=? AND lon=? LIMIT 1",(retailer,name,lat,lon)).fetchone()
+ return row["id"] if row else None
+
+def scavio_save_inventory(db,sid,product,status,quantity,label,detail):
+ db.execute("""INSERT INTO store_inventory(store_id,product_url,product_title,status,quantity,quantity_label,source_url,detail,checked_at)
+ VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(store_id,product_url) DO UPDATE SET product_title=excluded.product_title,status=excluded.status,quantity=excluded.quantity,quantity_label=excluded.quantity_label,source_url=excluded.source_url,detail=excluded.detail,checked_at=excluded.checked_at""",(sid,product["url"],product["title"],status,quantity,label,product["url"],detail,now()))
+ db.execute("INSERT INTO store_inventory_checks(store_id,status,checked_at,detail) VALUES(?,?,?,?) ON CONFLICT(store_id) DO UPDATE SET status=excluded.status,checked_at=excluded.checked_at,detail=excluded.detail",(sid,"checked",now(),"Scavio branch inventory result"))
+
+def scavio_refresh_partner_inventory():
+ if not os.getenv("SCAVIO_API_KEY","").strip(): return {"Costco":0,"Sam's Club":0,"Dollar General":0}
+ db=conn(); due={}; stamp=datetime.now(timezone.utc)
+ for retailer in ("Costco","Sam's Club","Dollar General"):
+  key="scavio_inventory_attempt_"+retailer.lower().replace(" ","_")
+  row=db.execute("SELECT value FROM settings WHERE key=?",(key,)).fetchone(); recent=False
+  if row:
+   try: recent=(stamp-datetime.fromisoformat(row["value"])).total_seconds()<SCAVIO_CACHE_HOURS*3600
+   except Exception: pass
+  due[retailer]=not recent
+  if not recent: db.execute("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",(key,now()))
+ db.commit()
+ counts={"Costco":0,"Sam's Club":0,"Dollar General":0}
+ products={r:[dict(x) for x in db.execute("SELECT * FROM products WHERE retailer=? AND seller_verified=1 ORDER BY popularity_score DESC,last_seen DESC LIMIT ?",(r,SCAVIO_MAX_PRODUCTS_PER_RETAILER))] for r in counts}
+ wr=db.execute("SELECT value FROM settings WHERE key='scavio_costco_warehouses'").fetchone(); db.close()
+ warehouses=[]
+ if wr:
+  try: warehouses=json.loads(wr["value"])
+  except Exception: pass
+ if due["Costco"] and products["Costco"]:
+  if not warehouses:
+   d=scavio_post("/api/v1/costco/warehouses",{"zip":ZIP,"limit":10}); warehouses=(d or {}).get("data",{}).get("warehouses",[])
+  ids=[str(w.get("warehouse_id")) for w in warehouses[:10] if w.get("warehouse_id")]
+  for p in products["Costco"]:
+   num=p.get("scavio_item_id")
+   if not num or not ids: continue
+   d=scavio_post("/api/v1/costco/availability",{"item_number":str(num),"warehouse_ids":ids,"country":"us"})
+   if not d: continue
+   db=conn()
+   for w in d["data"].get("warehouses",[]):
+    sid=scavio_upsert_store(db,"Costco",w)
+    if sid:
+     scavio_save_inventory(db,sid,p,scavio_inventory_status(w.get("in_warehouse")),None,"Unit count not provided","Scavio Costco warehouse status only; not a unit count")
+     counts["Costco"]+=1
+   db.commit(); db.close()
+ if due["Sam's Club"] and products["Sam's Club"]:
+  d=scavio_post("/api/v1/samsclub/clubs",{"zip":ZIP,"limit":SCAVIO_MAX_SAMS_CLUBS}); clubs=(d or {}).get("data",{}).get("clubs",[])
+  for p in products["Sam's Club"]:
+   iid=p.get("scavio_item_id")
+   if not iid: continue
+   for club in clubs:
+    cid=str(club.get("club_id") or "")
+    if not cid: continue
+    d=scavio_post("/api/v1/samsclub/product",{"item_id":str(iid),"club_id":cid})
+    if not d: continue
+    item=d["data"]; db=conn(); sid=scavio_upsert_store(db,"Sam's Club",club)
+    if sid:
+     qty=None
+     for opt in (item.get("fulfillment") or {}).get("options") or []:
+      if str(opt.get("method","")).lower() in ("club","in_club","pickup","in_store") and isinstance(opt.get("available_quantity"),(int,float)):
+       qty=opt["available_quantity"]; break
+     status=scavio_inventory_status(item.get("in_stock_at_club"),qty)
+     scavio_save_inventory(db,sid,p,status,qty,(str(qty)+" available" if qty is not None else "Unit count unavailable"),"Scavio Sam's Club stock for this club; aisle: "+str(item.get("aisle") or "not provided"))
+     counts["Sam's Club"]+=1; db.commit()
+    db.close()
+ if due["Dollar General"] and products["Dollar General"]:
+  for p in products["Dollar General"]:
+   upc=p.get("scavio_upc")
+   if not upc: continue
+   d=scavio_post("/api/v1/dollargeneral/stores",{"zip":ZIP,"radius":RADIUS,"upc":str(upc)})
+   if not d: continue
+   db=conn()
+   for st in d["data"].get("stores",[]):
+    sid=scavio_upsert_store(db,"Dollar General",st)
+    if sid:
+     qty=st.get("quantity"); status=scavio_inventory_status(st.get("stock_status"),qty)
+     scavio_save_inventory(db,sid,p,status,qty,(str(qty)+" units" if qty is not None else "Unit count unavailable"),"Scavio Dollar General UPC inventory by nearby store")
+     counts["Dollar General"]+=1
+   db.commit(); db.close()
+ log.info("Scavio partner branch inventory rows updated: %s",counts)
+ return counts
 
 def scavio_target_inventory():
  # Target availability is a separate endpoint from product search. Limit to
