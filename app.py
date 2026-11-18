@@ -586,7 +586,6 @@ def search_products(retailer, progress_callback=None, max_candidates=None):
      raw=unquote(raw.replace("&amp;","&"))
      if "bing.com/ck/a" in raw:
       try:
-       from urllib.parse import urlparse,parse_qs
        params=parse_qs(urlparse(raw).query)
        encoded=params.get("u",[""])[0]
        if encoded.startswith("a1"):
