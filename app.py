@@ -732,6 +732,14 @@ def search_products(retailer, progress_callback=None, max_candidates=None):
    products.append({"retailer":retailer,"title":title,"url":u,"price":price,"availability":stock,"seller":seller,"seller_verified":True,"popularity_score":score,"popularity_reason":reason})
   except Exception as e:
    log.warning("Retailer product page parse failed for %s (%s): %s",retailer,u,e)
+ for listing in products:
+  normalized=normalize_product_title(listing.get("title"))
+  if not normalized: continue
+  stamp=now()
+  c.execute("INSERT OR IGNORE INTO product_catalog(title,normalized_title,created_at,updated_at) VALUES(?,?,?,?)",(listing["title"],normalized,stamp,stamp))
+  catalog=c.execute("SELECT id,track_all FROM product_catalog WHERE normalized_title=?",(normalized,)).fetchone()
+  if catalog:
+   c.execute("UPDATE products SET catalog_product_id=?,monitor_enabled=? WHERE url=?",(catalog["id"],int(catalog["track_all"]),listing["url"]))
  c.commit(); c.close()
  log.info("%s: %s retailer-owned Pokémon TCG product pages verified from %s candidates",retailer,len(products),len(found))
  return products
@@ -995,6 +1003,23 @@ def api_inventory():
 @app.get("/api/products")
 def api_products():
  c=conn();rows=[dict(x) for x in c.execute("SELECT * FROM products ORDER BY seller_verified DESC,popularity_score DESC,last_seen DESC LIMIT 2000")];c.close();return jsonify(products=rows)
+@app.get("/api/catalog")
+def api_catalog():
+ c=conn();catalogs=[dict(x) for x in c.execute("SELECT * FROM product_catalog ORDER BY title COLLATE NOCASE")];
+ for item in catalogs:
+  item["offers"]=[dict(x) for x in c.execute("SELECT id,retailer,title,url,price,availability,seller_verified,seller_name,popularity_score,last_checked,next_check_at,monitor_enabled FROM products WHERE catalog_product_id=? ORDER BY seller_verified DESC,retailer",(item["id"],))]
+ c.close();return jsonify(catalog=catalogs)
+
+@app.post("/api/catalog/<int:catalog_id>/track")
+def api_catalog_track(catalog_id):
+ payload=request.get_json(silent=True) or {}
+ enabled=payload.get("enabled")
+ if not isinstance(enabled,bool): return jsonify(error="enabled must be true or false"),400
+ c=conn();cur=c.execute("UPDATE product_catalog SET track_all=?,updated_at=? WHERE id=?",(int(enabled),now(),catalog_id))
+ if cur.rowcount: c.execute("UPDATE products SET monitor_enabled=? WHERE catalog_product_id=?",(int(enabled),catalog_id))
+ c.commit();c.close()
+ if not cur.rowcount: return jsonify(error="Product not found"),404
+ return jsonify(status="tracking" if enabled else "paused",track_all=enabled,catalog_product_id=catalog_id)
 @app.get("/api/restock-events")
 def api_restock_events():
  c=conn();rows=[dict(x) for x in c.execute("SELECT * FROM restock_events ORDER BY id DESC LIMIT 200")];c.close();return jsonify(events=rows)
