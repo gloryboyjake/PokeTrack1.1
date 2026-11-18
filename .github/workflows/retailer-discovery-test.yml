@@ -5,6 +5,11 @@ on:
     branches: [fix/retailer-product-discovery]
   workflow_dispatch:
 
+# Retailer sites rate-limit repeated requests. Keep one live scan at a time.
+concurrency:
+  group: retailer-discovery-live
+  cancel-in-progress: true
+
 jobs:
   live-product-discovery:
     runs-on: ubuntu-latest
