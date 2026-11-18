@@ -418,7 +418,7 @@ def retailer_product_url_is_valid(retailer,url):
  return True
 
 SCAVIO_BASE_URL="https://api.scavio.dev"
-SCAVIO_CACHE_HOURS=6
+SCAVIO_CACHE_HOURS=9
 SCAVIO_QUERIES=("Pokemon TCG","Pokemon trading cards")
 def scavio_post(path,payload,timeout=90):
  key=os.getenv("SCAVIO_API_KEY","").strip()
@@ -437,7 +437,7 @@ def scavio_post(path,payload,timeout=90):
   log.warning("Scavio request %s failed: %s",path,str(e)[:220])
   return None
 def scavio_products_for_retailer(retailer,progress_callback=None):
- # A six-hour per-retailer cache prevents the existing 15-minute cron from
+ # A nine-hour per-retailer cache prevents the existing 15-minute cron from
  # consuming free credits repeatedly. A failed request never deletes old rows.
  paths={"Target":"/api/v1/target/search","Costco":"/api/v1/costco/search",
   "Sam's Club":"/api/v1/samsclub/search"}
