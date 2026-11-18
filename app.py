@@ -720,6 +720,48 @@ def search_products(retailer, progress_callback=None, max_candidates=None):
  log.info("%s: %s retailer-owned Pokémon TCG product pages verified from %s candidates",retailer,len(products),len(found))
  return products
 
+def product_check_interval(popularity_score):
+ score=int(popularity_score or 0)
+ if score>=25: return 300
+ if score>=15: return 600
+ return 1800
+
+def monitor_due_products(progress_callback=None, limit=60):
+ # Monitor due, verified product URLs independently of broad catalog discovery.
+ c=conn(); stamp=now()
+ rows=[dict(x) for x in c.execute("""SELECT * FROM products WHERE seller_verified=1 AND monitor_enabled=1 AND (next_check_at IS NULL OR next_check_at='' OR next_check_at<=?) ORDER BY popularity_score DESC,COALESCE(next_check_at,'') ASC LIMIT ?""",(stamp,int(limit)))]
+ checked=0; changed=0; restocks=0; unknown=0; errors=0
+ for idx,product in enumerate(rows,1):
+  old_status=product.get('availability') or 'unknown'; new_status='unknown'; evidence=''
+  try:
+   page=retailer_get(product['url'],headers=HEADERS,timeout=18)
+   if (not page.ok) or re.search(r'captcha|robot or human|verify you are human|access denied|unusual traffic',page.text[:30000],re.I):
+    evidence='Retailer page unavailable or blocked; availability remains unknown'
+   else:
+    soup=BeautifulSoup(page.text,'html.parser')
+    visible=soup.get_text(' ',strip=True)
+    embedded=' '.join(x.get_text(' ',strip=True) for x in soup.select("script[type='application/ld+json'],script#__NEXT_DATA__,script[type='application/json']"))
+    verified,seller=verify_retailer_seller(product['retailer'],(visible+' '+embedded)[:500000])
+    if verified:
+     new_status=online_stock_status(visible,embedded+' '+page.text,product['retailer'])
+     evidence='Retailer page checked; seller verified as '+str(seller)+'; signal: '+new_status
+    else: evidence='Seller could not be re-verified; availability remains unknown'
+  except Exception as exc:
+   errors+=1; evidence='Check failed: '+str(exc)[:220]
+  if new_status=='unknown': unknown+=1
+  if new_status!=old_status: changed+=1
+  checked_at=now(); interval=product_check_interval(product.get('popularity_score'))
+  due=(datetime.now(timezone.utc)+timedelta(seconds=interval)).isoformat()
+  c.execute("""UPDATE products SET availability=?,last_checked=?,stock_checked_at=?,check_interval_seconds=?,next_check_at=?,last_status_change=CASE WHEN availability<>? THEN ? ELSE last_status_change END WHERE id=?""",(new_status,checked_at,checked_at,interval,due,new_status,checked_at,product['id']))
+  c.execute("INSERT INTO product_stock_history(product_id,checked_at,status,price,source,evidence) VALUES(?,?,?,?,?,?)",(product['id'],checked_at,new_status,product.get('price'),'retailer product page',evidence[:500]))
+  if old_status=='out_of_stock' and new_status=='in_stock':
+   c.execute("INSERT INTO restock_events(product_id,retailer,title,url,detected_at,previous_status,current_status) VALUES(?,?,?,?,?,?,?)",(product['id'],product['retailer'],product['title'],product['url'],checked_at,old_status,new_status))
+   restocks+=1
+  checked+=1
+  if progress_callback: progress_callback(idx,len(rows),'Monitoring '+str(idx)+'/'+str(len(rows))+': '+product['title'][:90])
+ c.commit(); c.close()
+ return {'checked':checked,'status_changes':changed,'restocks':restocks,'unknown':unknown,'errors':errors,'message':'Product-first monitor checked '+str(checked)+' due verified listings; '+str(restocks)+' confirmed restock transitions; '+str(unknown)+' unknown; '+str(errors)+' errors.'}
+
 def branch_stock_status(blob):
  blob=(blob or "").lower()
  if re.search(r'out of stock|sold out|unavailable for pickup|not available at this store',blob): return "out_of_stock",None,"Out of stock"
