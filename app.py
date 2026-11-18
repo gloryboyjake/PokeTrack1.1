@@ -307,9 +307,13 @@ def verify_retailer_seller(retailer, page_text):
   if any(any(alias in name.lower() for alias in expected) for name in sellers):
    return True,retailer
   return False,None
- if re.search(r"more options from marketplace sellers|marketplace only|third.party seller|sold by a third party",text):
+ if re.search(r"more options from marketplace sellers|marketplace only|third.party seller|sold by a third party|fulfilled by a third party",text):
   return False,None
- return True,"retailer offer (seller not separately named)"
+ # Do not silently treat an unnamed offer as first-party on marketplaces.
+ # Walmart, Target, Best Buy, and Amazon must expose an explicit retailer seller.
+ if retailer in ("Walmart","Target","Best Buy","Amazon"):
+  return False,None
+ return True,"retailer-owned domain (no marketplace seller indicated)"
 
 def popularity_for(title, page_text):
  t=(title or "").lower(); body=(page_text or "").lower(); score=0; reason=[]
