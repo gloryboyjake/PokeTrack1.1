@@ -1,0 +1,20 @@
+name: Python validation
+
+on:
+  pull_request:
+    branches: [rebuild/clean-start]
+  push:
+    branches: [fix/retailer-product-discovery]
+
+jobs:
+  syntax-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Compile Python files
+        run: python -m compileall -q app.py
