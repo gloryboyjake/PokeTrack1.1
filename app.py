@@ -422,7 +422,7 @@ def retailer_product_url_is_valid(retailer,url):
  if path.startswith(("/search","/s/","/q/","/c/","/category/","/browse/")): return False
  return True
 
-def search_products(retailer, progress_callback=None):
+def search_products(retailer, progress_callback=None, max_candidates=None):
  global GOOGLE_RATE_LIMITED
  catalog=direct_catalog_url(retailer)
  domain=RETAILERS[retailer][0]
@@ -632,6 +632,7 @@ def search_products(retailer, progress_callback=None):
  products=[]; c=conn()
  priority=("30th","delta-reign","ascended-heroes","chaos-rising","pitch-black","prismatic","mega-evolution","151","charizard","booster-bundle","elite-trainer")
  candidate_limit=500 if retailer=="Target" else 150
+ if max_candidates is not None: candidate_limit=max(1,min(candidate_limit,int(max_candidates)))
  candidates=sorted(found.items(),key=lambda item:(0 if any(term in (item[0]+" "+item[1]).lower() for term in priority) else 1))[:candidate_limit]
  def fetch_candidate(item):
   u,title=item
@@ -734,7 +735,7 @@ def search_products(retailer, progress_callback=None):
     popularity_score=excluded.popularity_score,popularity_reason=excluded.popularity_reason,
     availability=excluded.availability,source=excluded.source,last_seen=excluded.last_seen,
     last_checked=excluded.last_checked,discovery_sources=excluded.discovery_sources,stock_checked_at=excluded.stock_checked_at""",
-    (retailer,title,u,price,stock,"retailer product page",t,t,t,1,seller,score,reason,"Retailer catalog/sitemap + free Bing RSS search + curated seeds",t))
+    (retailer,title,u,price,stock,"retailer product page",t,t,t,1,seller,score,reason,"Retailer catalog/sitemap + Bing RSS + DuckDuckGo + curated seeds",t))
    products.append({"retailer":retailer,"title":title,"url":u,"price":price,"availability":stock,"seller":seller,"popularity_score":score,"popularity_reason":reason})
   except Exception as e:
    log.warning("Retailer product page parse failed for %s (%s): %s",retailer,u,e)
