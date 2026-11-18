@@ -8,7 +8,9 @@ A single Flask application and dashboard for discovering Pokémon TCG product li
 - Physical store directory: researched retailer branch locations in `store_directory.json`
 - Store refresh: ZIP-centroid geocoding and Haversine distance filtering
 - ZIP geocoding: Zippopotam.us with US Census fallback for the origin ZIP
-- Product discovery: rendered retailer catalog and product pages in Chromium, retailer-owned sitemaps, curated product seeds, and public restock feeds; no search-engine scraping
+- Product discovery: retailer-owned catalog pages, sitemaps, curated product URLs, and public search-index results used only to nominate candidate retailer URLs
+- Product monitoring: a separate due-product scheduler checks verified retailer-owned URLs, prioritizes popular products, records stock history, and logs confirmed out-of-stock to in-stock transitions
+- Missing products: API-backed request queue for product names and optional retailer URLs
 - Map services: none
 
 ## Store directory
@@ -22,7 +24,7 @@ The current researched directory includes Target, Walmart, Best Buy, Costco, Hob
 3. Set `DB_PATH=/data/poketrack.db`, `START_ZIP=22601`, and `RADIUS_MILES=80`.
 4. Start with `gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --timeout 900`.
 5. Set the health check path to `/health`.
-6. Configure a Railway cron service to POST to `/api/scan` every five minutes. The cron must call this same app and database.
+6. Configure a Railway cron service to POST to `/api/scan?kind=monitor` every five minutes for due-product checks. Run `/api/scan?kind=discover` on a slower cadence (for example, every six hours) to find new retailer listings. Keep both jobs pointed at this same app and database.
 
 ## Dashboard and API
 - `/` — responsive PokeTrack dashboard
@@ -33,7 +35,11 @@ The current researched directory includes Target, Walmart, Best Buy, Costco, Hob
 - `GET /api/summary` — dashboard summary
 - `POST /api/scan` — full scan (store directory and product listings)
 - `POST /api/scan?kind=stores` — refresh store directory
-- `POST /api/scan?kind=products` — refresh product listings
+- `POST /api/scan?kind=products` — discover and refresh retailer product listings
+- `POST /api/scan?kind=discover` — run catalog discovery without store inventory checks
+- `POST /api/scan?kind=monitor` — check only due, first-party-verified product URLs
+- `GET /api/restock-events` — confirmed out-of-stock to in-stock transitions
+- `GET /api/product-requests` and `POST /api/product-requests` — queue missing product requests
 
 ## Accuracy limits
 The branch directory is manually researched from retailer store locators and is only as current as those sources. ZIP-centroid coordinates are used for distance estimates, so distance is approximate rather than an address-level route distance. Product discovery is best-effort and depends on public search and retailer page access. A product page is not proof of local branch stock. Availability is marked in stock or out of stock only when explicit wording appears on the retailer page; otherwise it remains unknown. No inventory counts are fabricated.
