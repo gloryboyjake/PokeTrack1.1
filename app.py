@@ -432,64 +432,6 @@ def retailer_product_url_is_valid(retailer,url):
 
 def search_products(retailer, progress_callback=None, max_candidates=None):
  global GOOGLE_RATE_LIMITED
- # Apify's rendered-browser crawler is the primary discovery path for the
- # retailers that currently block ordinary HTTP. Keep the legacy scanner as a
- # fallback until a retailer has returned trustworthy Apify records.
- if os.getenv("APIFY_API_TOKEN") and os.getenv("APIFY_ENABLED","true").lower() in ("1","true","yes"):
-  apify_targets={x.strip() for x in os.getenv("APIFY_RETAILERS","Sam's Club").split(",") if x.strip()}
-  if retailer in apify_targets:
-   try:
-    c=conn()
-    cooldown=int(os.getenv("APIFY_SCAN_INTERVAL_SECONDS","3600"))
-    setting_key="apify_last_scan:"+retailer
-    last=c.execute("SELECT value FROM settings WHERE key=?",(setting_key,)).fetchone()
-    if last:
-     try: age=(datetime.now(timezone.utc)-datetime.fromisoformat(last["value"])).total_seconds()
-     except Exception: age=cooldown+1
-     if age<cooldown:
-      cached=[dict(x) for x in c.execute("SELECT * FROM products WHERE retailer=? AND seller_verified=1 ORDER BY popularity_score DESC,last_seen DESC",(retailer,))]
-      if cached:
-       c.close()
-       return [{"retailer":retailer,"title":x["title"],"url":x["url"],"price":x["price"],"availability":x["availability"],
-        "seller":x["seller_name"],"seller_verified":True,"popularity_score":x["popularity_score"],"popularity_reason":x["popularity_reason"]} for x in cached]
-    c.close()
-    from apify_scanner import scan_retailer
-    apify_products=scan_retailer(retailer,direct_catalog_url(retailer),SEED_PRODUCT_URLS.get(retailer,[]),RETAILERS[retailer][0])
-    c=conn()
-    c.execute("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",(setting_key,now()))
-    c.commit(); c.close()
-    if apify_products:
-     c=conn(); saved=[]
-     for item in apify_products:
-      title=(item.get("title") or "").strip()[:250]
-      url=clean_url(item.get("url"))
-      if not title or not url or not retailer_domain_match(url,RETAILERS[retailer][0]) or not is_pokemon_tcg_title(title):
-       continue
-      verified=bool(item.get("seller_verified"))
-      if not verified:
-       continue
-      price=item.get("price")
-      stock=item.get("availability") if item.get("availability") in ("in_stock","out_of_stock","unknown") else "unknown"
-      seller=item.get("seller") or retailer
-      score,reason=popularity_for(title,item.get("page_text",""))
-      t=now()
-      c.execute("""INSERT INTO products(retailer,title,url,price,availability,source,first_seen,last_seen,last_checked,
-       seller_verified,seller_name,popularity_score,popularity_reason,discovery_sources,stock_checked_at)
-       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(url) DO UPDATE SET title=excluded.title,
-       price=COALESCE(excluded.price,products.price),availability=excluded.availability,seller_verified=1,
-       seller_name=excluded.seller_name,popularity_score=excluded.popularity_score,popularity_reason=excluded.popularity_reason,
-       source=excluded.source,last_seen=excluded.last_seen,last_checked=excluded.last_checked,
-       discovery_sources=excluded.discovery_sources,stock_checked_at=excluded.stock_checked_at""",
-       (retailer,title,url,price,stock,"Apify rendered browser scan",t,t,t,1,seller,score,reason,
-        "Apify Web Scraper (browser-rendered catalog and product pages)",t if stock!="unknown" else ""))
-      saved.append({"retailer":retailer,"title":title,"url":url,"price":price,"availability":stock,
-       "seller":seller,"seller_verified":True,"popularity_score":score,"popularity_reason":reason})
-     c.commit(); c.close()
-     if saved:
-      log.info("%s: Apify returned %s first-party verified Pokémon TCG listings",retailer,len(saved))
-      return saved
-   except Exception as e:
-    log.exception("%s: Apify scan failed; falling back to existing scanner: %s",retailer,e)
  catalog=direct_catalog_url(retailer)
  domain=RETAILERS[retailer][0]
  found={}
