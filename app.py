@@ -436,7 +436,7 @@ def search_products(retailer, progress_callback=None, max_candidates=None):
  # retailers that currently block ordinary HTTP. Keep the legacy scanner as a
  # fallback until a retailer has returned trustworthy Apify records.
  if os.getenv("APIFY_API_TOKEN") and os.getenv("APIFY_ENABLED","true").lower() in ("1","true","yes"):
-  apify_targets={x.strip() for x in os.getenv("APIFY_RETAILERS","Target,Walmart,Best Buy,Sam's Club").split(",") if x.strip()}
+  apify_targets={x.strip() for x in os.getenv("APIFY_RETAILERS","Sam's Club").split(",") if x.strip()}
   if retailer in apify_targets:
    try:
     c=conn()
