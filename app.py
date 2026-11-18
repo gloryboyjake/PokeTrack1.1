@@ -278,7 +278,7 @@ def direct_catalog_url(retailer):
  urls={
   "Target":"https://www.target.com/c/trading-card-games-cards-toys/pokemon/-/N-d4gjqZ569t0",
   "Walmart":"https://www.walmart.com/cp/pokemon/3580439",
-  "Walgreens":"https://www.walgreens.com/store/c/productlist/N%3D2672-310687-9000160368",
+  "Walgreens":"https://www.walgreens.com/search/results.jsp?Ntt=pokemon%20trading%20cards",
   "Best Buy":"https://www.bestbuy.com/site/pokemon/pokemon-trading-cards/pcmcat1741200145801.c",
   "Barnes & Noble":"https://www.barnesandnoble.com/collections/toys-games/games/collectible-card-games-1",
   "Costco":"https://www.costco.com/CatalogSearch?keyword=pokemon",
@@ -490,7 +490,7 @@ def search_products(retailer, progress_callback=None, max_candidates=None):
      data=json.loads(node.string or node.get_text())
      walk_catalog_json(data)
     except Exception: pass
-  except requests.RequestException as e:
+  except Exception as e:
    log.warning("Direct catalog unavailable for %s: %s; using public search fallback",retailer,e)
  # Target's catalog is rendered dynamically and may return an incomplete page to
  # ordinary HTTP clients. Use Jina Reader's text rendering as a fallback to
@@ -527,7 +527,7 @@ def search_products(retailer, progress_callback=None, max_candidates=None):
    for line in robots.text.splitlines():
     if line.lower().startswith("sitemap:"):
      sitemap_queue.append(line.split(":",1)[1].strip())
- except requests.RequestException as e:
+ except Exception as e:
   log.warning("Robots.txt unavailable for %s: %s",retailer,e)
  if not sitemap_queue: sitemap_queue=[f"https://www.{domain}/sitemap.xml"]
  sitemap_seen=set()
@@ -552,7 +552,7 @@ def search_products(retailer, progress_callback=None, max_candidates=None):
     add_candidate(product_url,"Pokemon Trading Card Product")
     sitemap_product_count+=1
     if sitemap_product_count>=500: break
-  except (requests.RequestException,ET.ParseError) as e:
+  except Exception as e:
    log.warning("Retailer sitemap unavailable for %s (%s): %s",retailer,sitemap_url,e)
  if sitemap_product_count:
   log.info("%s: %s Pokémon URLs found in retailer-owned sitemaps",retailer,sitemap_product_count)
@@ -596,7 +596,7 @@ def search_products(retailer, progress_callback=None, max_candidates=None):
      raw=raw.split("&amp;")[0]
      add_candidate(raw,result_title)
    log.info("%s: Bing RSS query %s found %s total candidate URLs",retailer,term_index,len(found))
-  except (requests.RequestException,ET.ParseError) as e:
+  except Exception as e:
    log.warning("%s: free Bing RSS discovery query failed (%s): %s",retailer,term_index,str(e)[:180])
  # Bing RSS can return an empty feed even when retailer product pages are indexed.
  # Use DuckDuckGo's public HTML results as a second independent, keyless discovery
