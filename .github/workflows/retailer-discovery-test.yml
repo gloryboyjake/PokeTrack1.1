@@ -69,6 +69,35 @@ jobs:
           print(json.dumps({"results": results, "failures": failures}, indent=2))
           with open("/tmp/poketrack-discovery-results.json", "w") as f:
               json.dump({"results": results, "failures": failures}, f, indent=2)
-          if failures or not any(r["discovered_listings"] for r in results):
+          total_verified = sum(r["first_party_verified"] for r in results)
+          verified_retailers = sum(1 for r in results if r["first_party_verified"] > 0)
+          summary = [
+              "## Live retailer discovery quality gate",
+              "",
+              "| Retailer | Discovered | First-party verified | Unverified / blocked |",
+              "|---|---:|---:|---:|",
+          ]
+          for r in results:
+              summary.append(
+                  f"| {r['retailer']} | {r['discovered_listings']} | "
+                  f"{r['first_party_verified']} | {r['unverified_or_blocked']} |"
+              )
+          summary.extend([
+              "",
+              f"**Total:** {sum(r['discovered_listings'] for r in results)} discovered; "
+              f"**{total_verified} first-party verified** across **{verified_retailers} retailers**.",
+              "",
+              "Quality gate: at least 10 first-party verified listings across at least 3 retailers.",
+          ])
+          summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary_path:
+              with open(summary_path, "a") as summary_file:
+                  summary_file.write("\\n".join(summary) + "\\n")
+          if failures or total_verified < 10 or verified_retailers < 3:
+              print(
+                  "QUALITY GATE FAILED: live discovery coverage is not deployment-ready "
+                  f"({total_verified} verified listings across {verified_retailers} retailers).",
+                  flush=True,
+              )
               sys.exit(1)
           PY
