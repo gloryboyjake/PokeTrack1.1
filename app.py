@@ -593,6 +593,39 @@ def search_products(retailer, progress_callback=None):
    log.info("%s: Bing RSS query %s found %s total candidate URLs",retailer,term_index,len(found))
   except (requests.RequestException,ET.ParseError) as e:
    log.warning("%s: free Bing RSS discovery query failed (%s): %s",retailer,term_index,str(e)[:180])
+ # Bing RSS can return an empty feed even when retailer product pages are indexed.
+ # Use DuckDuckGo's public HTML results as a second independent, keyless discovery
+ # source. Search results only nominate product URLs; the retailer page is still
+ # fetched below and must pass the Pokémon TCG and seller checks before saving.
+ ddg_terms=[
+  "Pokemon trading card game",
+  "Pokemon elite trainer box",
+  "Pokemon booster bundle",
+  "Pokemon collection box tin blister",
+  "Pokemon 30th celebration trading cards",
+  "Pokemon Mega Evolution TCG"
+ ]
+ for term_index,term in enumerate(ddg_terms,1):
+  query=f"site:{domain} {term}"
+  try:
+   if progress_callback: progress_callback(0.32+0.06*term_index/len(ddg_terms),f"{retailer}: checking independent product search {term_index}/{len(ddg_terms)}")
+   search_url="https://html.duckduckgo.com/html/?q="+requests.utils.quote(query)
+   response=requests.get(search_url,headers={**HEADERS,"Referer":"https://duckduckgo.com/","Accept":"text/html,application/xhtml+xml"},timeout=15)
+   response.raise_for_status()
+   search_soup=BeautifulSoup(response.text,"html.parser")
+   added_before=len(found)
+   for anchor in search_soup.select("a.result__a, a[data-testid='result-title-a'], a[href]"):
+    raw=anchor.get("href","").strip()
+    if not raw: continue
+    parsed=urlparse(raw)
+    if "duckduckgo.com" in (parsed.hostname or ""):
+     target=parse_qs(parsed.query).get("uddg",[""])[0]
+     if target: raw=unquote(target)
+    label=anchor.get_text(" ",strip=True)
+    add_candidate(raw,label)
+   log.info("%s: DuckDuckGo query %s discovered %s additional product URLs (%s total)",retailer,term_index,len(found)-added_before,len(found))
+  except (requests.RequestException,ValueError) as e:
+   log.warning("%s: independent product search query %s failed: %s",retailer,term_index,str(e)[:160])
  # Search-engine results supplement retailer catalog pages, sitemaps and curated seeds.
  products=[]; c=conn()
  priority=("30th","delta-reign","ascended-heroes","chaos-rising","pitch-black","prismatic","mega-evolution","151","charizard","booster-bundle","elite-trainer")
