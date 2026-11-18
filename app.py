@@ -1,6 +1,6 @@
 import os, re, json, math, time, sqlite3, logging, threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from urllib.parse import urlparse, urlunparse, parse_qs, unquote
 import requests
 try:
@@ -179,8 +179,19 @@ CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS store_inventory(id INTEGER PRIMARY KEY,store_id INTEGER NOT NULL,product_url TEXT NOT NULL,product_title TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'unknown',quantity INTEGER,quantity_label TEXT NOT NULL DEFAULT 'count unavailable',source_url TEXT,detail TEXT,checked_at TEXT NOT NULL,UNIQUE(store_id,product_url));
 CREATE TABLE IF NOT EXISTS store_inventory_checks(store_id INTEGER PRIMARY KEY,status TEXT NOT NULL,checked_at TEXT NOT NULL,detail TEXT);
 CREATE TABLE IF NOT EXISTS retailer_scan_status(retailer TEXT PRIMARY KEY,status TEXT NOT NULL,checked_at TEXT NOT NULL,product_count INTEGER NOT NULL DEFAULT 0,detail TEXT NOT NULL DEFAULT '');
+CREATE TABLE IF NOT EXISTS product_catalog(id INTEGER PRIMARY KEY,title TEXT NOT NULL,normalized_title TEXT NOT NULL UNIQUE,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,track_all INTEGER NOT NULL DEFAULT 1);
+CREATE TABLE IF NOT EXISTS product_stock_history(id INTEGER PRIMARY KEY,product_id INTEGER NOT NULL,checked_at TEXT NOT NULL,status TEXT NOT NULL,price TEXT,source TEXT NOT NULL DEFAULT 'retailer product page',evidence TEXT NOT NULL DEFAULT '');
+CREATE INDEX IF NOT EXISTS idx_product_stock_history_product_time ON product_stock_history(product_id,checked_at DESC);
+CREATE TABLE IF NOT EXISTS restock_events(id INTEGER PRIMARY KEY,product_id INTEGER NOT NULL,retailer TEXT NOT NULL,title TEXT NOT NULL,url TEXT NOT NULL,detected_at TEXT NOT NULL,previous_status TEXT NOT NULL,current_status TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS product_requests(id INTEGER PRIMARY KEY,product_title TEXT NOT NULL,retailer TEXT,product_url TEXT,notes TEXT,status TEXT NOT NULL DEFAULT 'pending',created_at TEXT NOT NULL);
 """
 def now(): return datetime.now(timezone.utc).isoformat()
+def normalize_product_title(title):
+ value=(title or "").lower()
+ value=re.sub(r"\s*[|–—-]\s*(target|walmart|best buy|costco|walgreens|barnes\s*&\s*noble|sam'?s club)(?:\.com)?\s*$","",value)
+ value=re.sub(r"[^a-z0-9]+"," ",value)
+ return re.sub(r"\s+"," ",value).strip()[:240]
+
 def conn():
  global DB_READY
  os.makedirs(os.path.dirname(DB_PATH) or ".",exist_ok=True)
@@ -201,11 +212,20 @@ def conn():
     for name,decl in [("progress","INTEGER NOT NULL DEFAULT 0"),("phase","TEXT NOT NULL DEFAULT ''"),("current","INTEGER NOT NULL DEFAULT 0"),("total","INTEGER NOT NULL DEFAULT 0")]:
      if name not in scan_cols: c.execute(f"ALTER TABLE poketrack_scan_runs ADD COLUMN {name} {decl}")
     cols={r[1] for r in c.execute("PRAGMA table_info(products)")}
-    for name,decl in [("last_checked","TEXT NOT NULL DEFAULT ''"),("seller_verified","INTEGER NOT NULL DEFAULT 0"),("seller_name","TEXT"),("popularity_score","INTEGER NOT NULL DEFAULT 0"),("popularity_reason","TEXT"),("discovery_sources","TEXT"),("stock_checked_at","TEXT")]:
+    for name,decl in [("last_checked","TEXT NOT NULL DEFAULT ''"),("seller_verified","INTEGER NOT NULL DEFAULT 0"),("seller_name","TEXT"),("popularity_score","INTEGER NOT NULL DEFAULT 0"),("popularity_reason","TEXT"),("discovery_sources","TEXT"),("stock_checked_at","TEXT"),("monitor_enabled","INTEGER NOT NULL DEFAULT 1"),("check_interval_seconds","INTEGER NOT NULL DEFAULT 1800"),("next_check_at","TEXT"),("last_status_change","TEXT"),("catalog_product_id","INTEGER"),("last_confirmed_availability","TEXT NOT NULL DEFAULT ''")]:
      if name not in cols: c.execute(f"ALTER TABLE products ADD COLUMN {name} {decl}")
     # A worker thread cannot survive a Railway container restart. Close stale
     # running rows so the dashboard never displays a permanently frozen scan.
     c.execute("UPDATE poketrack_scan_runs SET status='interrupted',finished_at=?,phase='Interrupted by service restart' WHERE status='running'",(now(),))
+    stamp=now()
+    c.execute("UPDATE products SET check_interval_seconds=CASE WHEN popularity_score>=25 THEN 300 WHEN popularity_score>=15 THEN 600 ELSE 1800 END,next_check_at=CASE WHEN next_check_at IS NULL OR next_check_at='' THEN ? ELSE next_check_at END WHERE seller_verified=1",(stamp,))
+    c.execute("UPDATE products SET last_confirmed_availability=availability WHERE last_confirmed_availability='' AND availability IN ('in_stock','out_of_stock')")
+    for listing in c.execute("SELECT id,title FROM products WHERE catalog_product_id IS NULL").fetchall():
+     normalized=normalize_product_title(listing["title"])
+     if not normalized: continue
+     c.execute("INSERT OR IGNORE INTO product_catalog(title,normalized_title,created_at,updated_at) VALUES(?,?,?,?)",(listing["title"],normalized,stamp,stamp))
+     catalog=c.execute("SELECT id FROM product_catalog WHERE normalized_title=?",(normalized,)).fetchone()
+     if catalog: c.execute("UPDATE products SET catalog_product_id=? WHERE id=?",(catalog["id"],listing["id"]))
     c.commit()
     DB_READY=True
  else:
@@ -278,38 +298,56 @@ def direct_catalog_url(retailer):
  urls={
   "Target":"https://www.target.com/c/trading-card-games-cards-toys/pokemon/-/N-d4gjqZ569t0",
   "Walmart":"https://www.walmart.com/cp/pokemon/3580439",
-  "Walgreens":"https://www.walgreens.com/q/all-pokemon-cards",
+  "Walgreens":"https://www.walgreens.com/search/results.jsp?Ntt=pokemon%20trading%20cards",
   "Best Buy":"https://www.bestbuy.com/site/pokemon/pokemon-trading-cards/pcmcat1741200145801.c",
-  "Barnes & Noble":"https://www.barnesandnoble.com/s/pokemon",
+  "Barnes & Noble":"https://www.barnesandnoble.com/collections/toys-games/games/collectible-card-games-1",
   "Costco":"https://www.costco.com/CatalogSearch?keyword=pokemon",
   "Sam's Club":"https://www.samsclub.com/browse/Pokemon/16860219",
   "Dollar General":"https://www.dollargeneral.com/c/toys?page=4",
   "Hobby Lobby":"https://www.hobbylobby.com/search/?q=pokemon",
-  "Books-A-Million":"https://www.booksamillion.com/search?query=pokemon",
+  "Books-A-Million":"https://www.booksamillion.com/search?query=pokemon+trading+cards",
   "Gabe's":"https://www.gabesstores.com/",
   "Amazon":"https://www.amazon.com/s?k=pokemon+trading+cards"
  }
  return urls.get(retailer)
 def is_pokemon_tcg_title(title):
- title=(title or "").lower()
+ # Exclude licensed books and unrelated Pokémon merchandise.
+ title=re.sub(r"\s+"," ",(title or "").lower()).strip()
  if not re.search(r'pokemon|pokémon',title): return False
- if re.search(r'figure|plush|costume|apparel|backpack|toy car|lunch box',title): return False
- return bool(re.search(r'trading card|tcg|booster|elite trainer|etb|collection box|blister|tin|deck|card pack|card game',title))
+ if re.search(r'\b(book|paperback|hardcover|story|stories|novel|guide|calendar|advent calendar|figure|plush|costume|apparel|backpack|toy car|lunch box|video game|nintendo switch)\b',title): return False
+ return bool(re.search(r'trading card|\btc[g]?\b|booster|elite trainer|\betb\b|blister|tin|deck|card pack|card game|pokemon cards|pokémon cards',title))
 def verify_retailer_seller(retailer, page_text):
  text=(page_text or "").lower()
- aliases={"Target":("target",),"Walmart":("walmart",),"Best Buy":("best buy","bestbuy")}
+ # Extract seller identities from common JSON-LD and retailer page patterns.
  sellers=re.findall(r'"seller"\s*:\s*\{[^{}]*?"name"\s*:\s*"([^"]+)"',text,re.I)
+ sellers+=re.findall(r'"seller"\s*:\s*"([^"]+)"',text,re.I)
+ sellers+=re.findall(r'"sellerName"\s*:\s*"([^"]+)"',text,re.I)
  sellers+=re.findall(r'sold\s*(?:and|&)\s*shipped\s*by\s+([a-z0-9 .&-]{2,60})',text,re.I)
  sellers+=re.findall(r'sold by\s+([a-z0-9 .&-]{2,60})',text,re.I)
+ def key(value):
+  return re.sub(r"[^a-z0-9]+","",str(value or "").lower())
+ aliases={
+  "Target":{"target","targetcom"},
+  "Walmart":{"walmart","walmartcom"},
+  "Best Buy":{"bestbuy","bestbuycom"},
+  "Sam's Club":{"samsclub","samsclubcom"},
+  "Walgreens":{"walgreens","walgreenscom"},
+  "Barnes & Noble":{"barnesnoble","barnesandnoble","barnesnoblecom","barnesandnoblecom"},
+  "Amazon":{"amazon","amazoncom"}
+ }
  sellers=[re.sub(r"\s+"," ",x).strip(" .,:;") for x in sellers]
  if sellers:
-  expected=aliases.get(retailer,(retailer.lower(),))
-  if any(any(alias in name.lower() for alias in expected) for name in sellers):
+  allowed=aliases.get(retailer,{key(retailer),key(retailer)+"com"})
+  if any(key(name) in allowed for name in sellers):
    return True,retailer
   return False,None
- if re.search(r"more options from marketplace sellers|marketplace only|third.party seller|sold by a third party",text):
+ if re.search(r"more options from marketplace sellers|marketplace only|third.party seller|sold by a third party|fulfilled by a third party",text):
   return False,None
- return True,"retailer offer (seller not separately named)"
+ # Marketplace-capable retailers must expose an explicit seller identity.
+ # A retailer-owned URL alone is not enough to establish who fulfills the offer.
+ if retailer in aliases:
+  return False,None
+ return True,"retailer-owned domain (no marketplace seller indicated)"
 
 def popularity_for(title, page_text):
  t=(title or "").lower(); body=(page_text or "").lower(); score=0; reason=[]
@@ -338,67 +376,17 @@ def online_stock_status(page_text, embedded_text="", retailer=None):
   return "in_stock"
  return "unknown"
 
-RESTOCKR_TERMS_CACHE=[]
-RESTOCKR_TERMS_CACHE_AT=0
-def restockr_product_terms():
- global RESTOCKR_TERMS_CACHE,RESTOCKR_TERMS_CACHE_AT
- if RESTOCKR_TERMS_CACHE and time.time()-RESTOCKR_TERMS_CACHE_AT<21600:
-  return RESTOCKR_TERMS_CACHE
- terms=[]
- # TrackaLacker public Pokemon tracker catalog: product names, not retailer stock truth.
- for page_no in range(1,5):
-  try:
-   url=f"https://www.trackalacker.com/articles/news/pokemon-trackers?page={page_no}"
-   r=requests.get(url,headers=HEADERS,timeout=12); r.raise_for_status()
-   soup=BeautifulSoup(r.text,"html.parser")
-   for a in soup.select('a[href*="/products/showcase/"]'):
-    label=re.sub(r"\s+"," ",a.get_text(" ",strip=True)).strip()
-    label=re.sub(r"^\d+\s+options\s+","",label,flags=re.I)
-    label=re.sub(r"\$\s*[\d,.]+(?:\s*-\s*\$\s*[\d,.]+)?$","",label).strip()
-    if is_pokemon_tcg_title(label) and label.lower() not in [x.lower() for x in terms]:
-     terms.append(label[:120])
-  except requests.RequestException as e:
-   log.warning("TrackaLacker catalog page %s unavailable: %s",page_no,e)
- # Rippr Restockr's daily-updated catalog adds more sealed-product names.
- try:
-  r=requests.get("https://rippr.app/restockr",headers=HEADERS,timeout=20); r.raise_for_status()
-  text=BeautifulSoup(r.text,"html.parser").get_text(" ",strip=True)
-  pattern=re.compile(r"((?:(?:19|20)\d{2}\s+)?Pok[eé]mon[^$]{5,120}?)\s+Pok[eé]mon\s+\$",re.I)
-  for match in pattern.finditer(text):
-   title=re.sub(r"\s+"," ",match.group(1)).strip()
-   if is_pokemon_tcg_title(title) and title.lower() not in [x.lower() for x in terms]:
-    terms.append(title[:120])
- except requests.RequestException as e:
-  log.warning("Rippr Restockr catalog unavailable: %s",e)
- # Card Restock Tracker publishes product-level in-stock and sold-out pages for independent shops.
- try:
-  r=requests.get("https://cardrestocktracker.com/",headers=HEADERS,timeout=20); r.raise_for_status()
-  soup=BeautifulSoup(r.text,"html.parser")
-  for a in soup.select('a[href^="/us/"]'):
-   href=a.get("href","")
-   if "/store/" in href or href.endswith("/retailers"): continue
-   label=re.sub(r"\s+"," ",a.get_text(" ",strip=True)).strip()
-   label=re.split(r"\s+(?:in stock at|sold out)\b",label,flags=re.I)[0].strip()
-   if not label or not re.search(r"booster|elite trainer|etb|collection|blister|tin|deck|card pack",label,re.I): continue
-   title=label if re.search(r"pok[eé]mon",label,re.I) else "Pokemon TCG "+label
-   if is_pokemon_tcg_title(title) and title.lower() not in [x.lower() for x in terms]:
-    terms.append(title[:120])
- except requests.RequestException as e:
-  log.warning("Card Restock Tracker catalog unavailable: %s",e)
- RESTOCKR_TERMS_CACHE=terms[:40]
- RESTOCKR_TERMS_CACHE_AT=time.time()
- log.info("TrackaLacker, Rippr Restockr and Card Restock Tracker supplied %s Pokémon TCG product names",len(RESTOCKR_TERMS_CACHE))
- return RESTOCKR_TERMS_CACHE
-
-TRACKER_CANDIDATES_CACHE={}
-TRACKER_CANDIDATES_CACHE_AT=0
-def tracker_candidates(retailer):
- # TrackaLacker's product detail pages are access-restricted; use its public catalog for product names instead.
- return {}
-
 SEED_PRODUCT_URLS={
  "Target":["https://www.target.com/p/-/A-1010892076","https://www.target.com/p/-/A-1011483406"],
  "Walmart":["https://www.walmart.com/ip/15718673510","https://www.walmart.com/ip/20161351456","https://www.walmart.com/ip/20754418655","https://business.walmart.com/ip/POKEMON-SV10-DESTINED-RIVALS-D7-ELITE-TRAINER-BOX/19965460207"],
+ "Dollar General":["https://www.dollargeneral.com/p/pok%25c3%25a9mon-trading-card-pack%2C-10-ct/728192507076"],
+ "Sam's Club":[
+  "https://www.samsclub.com/ip/pokemon-4-mini-tins-4-promo-cards-bundle/17593918944",
+  "https://www.samsclub.com/ip/pokemon-poke-ball-two-mini-tins-assorted-styles/13872200589",
+  "https://www.samsclub.com/ip/seort/18430356539",
+  "https://www.samsclub.com/ip/pokemon-paldea-legends-tins-2-pk/16169807769",
+  "https://www.samsclub.com/ip/Pok-mon-Collector-Chest-and-Level-Poke-Ball/15337605373"
+ ],
  "Best Buy":[
   "https://www.bestbuy.com/product/pokemon-trading-card-game-30th-celebration-elite-trainer-box/JJG2TL8XCJ",
   "https://www.bestbuy.com/product/pokemon-trading-card-game-mega-evolution-pitch-black-elite-trainer-box/JJG2TL8J45",
@@ -417,7 +405,7 @@ def retailer_product_url_is_valid(retailer,url):
  if path.startswith(("/search","/s/","/q/","/c/","/category/","/browse/")): return False
  return True
 
-def search_products(retailer, progress_callback=None):
+def search_products(retailer, progress_callback=None, max_candidates=None):
  global GOOGLE_RATE_LIMITED
  catalog=direct_catalog_url(retailer)
  domain=RETAILERS[retailer][0]
@@ -439,7 +427,7 @@ def search_products(retailer, progress_callback=None):
    # small hand-picked sample. Stop at the retailer's last page or a safe ceiling.
    page_urls=[catalog]
    seen_pages=set()
-   while page_urls and len(seen_pages)<(30 if retailer=="Target" else 1):
+   while page_urls and len(seen_pages)<(30 if retailer=="Target" else 10):
     page_url=page_urls.pop(0)
     if page_url in seen_pages: continue
     seen_pages.add(page_url)
@@ -454,20 +442,20 @@ def search_products(retailer, progress_callback=None):
       title=(image_node.get("alt") if image_node else None) or a.get("aria-label") or a.get("title") or ""
      if not title and a.parent: title=a.parent.get_text(" ",strip=True)
      add_candidate(requests.compat.urljoin(page_url,a.get("href","")),title)
-    if retailer=="Target":
-     for selector in ('a[rel="next"]','a[aria-label*="Next" i]','a[data-test*="next" i]'):
+    # Follow retailer-provided next-page links for every catalog, not just Target.
+    for selector in ('a[rel="next"]','a[aria-label*="Next" i]','a[title*="Next" i]','a.next','.pagination a.next'):
       nxt=soup.select_one(selector)
       if nxt and nxt.get("href"):
        nu=requests.compat.urljoin(page_url,nxt["href"])
        if nu not in seen_pages: page_urls.append(nu)
        break
-     if not page_urls and len(seen_pages)<30:
-      from urllib.parse import urlsplit,urlunsplit,parse_qsl,urlencode
-      parts=urlsplit(page_url); params=dict(parse_qsl(parts.query))
-      current=int(params.get("Nao","0") or 0)
-      params["Nao"]=str(current+24)
-      next_url=urlunsplit((parts.scheme,parts.netloc,parts.path,urlencode(params),parts.fragment))
-      if next_url not in seen_pages: page_urls.append(next_url)
+    if retailer=="Target" and not page_urls and len(seen_pages)<30:
+     from urllib.parse import urlsplit,urlunsplit,parse_qsl,urlencode
+     parts=urlsplit(page_url); params=dict(parse_qsl(parts.query))
+     current=int(params.get("Nao","0") or 0)
+     params["Nao"]=str(current+24)
+     next_url=urlunsplit((parts.scheme,parts.netloc,parts.path,urlencode(params),parts.fragment))
+     if next_url not in seen_pages: page_urls.append(next_url)
    def walk_catalog_json(obj):
     if isinstance(obj,dict):
      name=obj.get("name") or obj.get("title") or obj.get("productName")
@@ -484,7 +472,7 @@ def search_products(retailer, progress_callback=None):
      data=json.loads(node.string or node.get_text())
      walk_catalog_json(data)
     except Exception: pass
-  except requests.RequestException as e:
+  except Exception as e:
    log.warning("Direct catalog unavailable for %s: %s; using public search fallback",retailer,e)
  # Target's catalog is rendered dynamically and may return an incomplete page to
  # ordinary HTTP clients. Use Jina Reader's text rendering as a fallback to
@@ -521,7 +509,7 @@ def search_products(retailer, progress_callback=None):
    for line in robots.text.splitlines():
     if line.lower().startswith("sitemap:"):
      sitemap_queue.append(line.split(":",1)[1].strip())
- except requests.RequestException as e:
+ except Exception as e:
   log.warning("Robots.txt unavailable for %s: %s",retailer,e)
  if not sitemap_queue: sitemap_queue=[f"https://www.{domain}/sitemap.xml"]
  sitemap_seen=set()
@@ -546,7 +534,7 @@ def search_products(retailer, progress_callback=None):
     add_candidate(product_url,"Pokemon Trading Card Product")
     sitemap_product_count+=1
     if sitemap_product_count>=500: break
-  except (requests.RequestException,ET.ParseError) as e:
+  except Exception as e:
    log.warning("Retailer sitemap unavailable for %s (%s): %s",retailer,sitemap_url,e)
  if sitemap_product_count:
   log.info("%s: %s Pokémon URLs found in retailer-owned sitemaps",retailer,sitemap_product_count)
@@ -581,7 +569,6 @@ def search_products(retailer, progress_callback=None):
      raw=unquote(raw.replace("&amp;","&"))
      if "bing.com/ck/a" in raw:
       try:
-       from urllib.parse import urlparse,parse_qs
        params=parse_qs(urlparse(raw).query)
        encoded=params.get("u",[""])[0]
        if encoded.startswith("a1"):
@@ -591,12 +578,43 @@ def search_products(retailer, progress_callback=None):
      raw=raw.split("&amp;")[0]
      add_candidate(raw,result_title)
    log.info("%s: Bing RSS query %s found %s total candidate URLs",retailer,term_index,len(found))
-  except (requests.RequestException,ET.ParseError) as e:
+  except Exception as e:
    log.warning("%s: free Bing RSS discovery query failed (%s): %s",retailer,term_index,str(e)[:180])
+ # Bing RSS can return an empty feed even when retailer product pages are indexed.
+ # Use DuckDuckGo's public HTML results as a second independent, keyless discovery
+ # source. Search results only nominate product URLs; the retailer page is still
+ # fetched below and must pass the Pokémon TCG and seller checks before saving.
+ ddg_terms=[
+  "Pokemon trading card game",
+  "Pokemon elite trainer box booster bundle",
+  "Pokemon 30th celebration Mega Evolution TCG"
+ ] if len(found)<10 else []
+ for term_index,term in enumerate(ddg_terms,1):
+  query=f"site:{domain} {term}"
+  try:
+   if progress_callback: progress_callback(0.32+0.06*term_index/len(ddg_terms),f"{retailer}: checking independent product search {term_index}/{len(ddg_terms)}")
+   search_url="https://html.duckduckgo.com/html/?q="+requests.utils.quote(query)
+   response=requests.get(search_url,headers={**HEADERS,"Referer":"https://duckduckgo.com/","Accept":"text/html,application/xhtml+xml"},timeout=15)
+   response.raise_for_status()
+   search_soup=BeautifulSoup(response.text,"html.parser")
+   added_before=len(found)
+   for anchor in search_soup.select("a.result__a, a[data-testid='result-title-a'], a[href]"):
+    raw=anchor.get("href","").strip()
+    if not raw: continue
+    parsed=urlparse(raw)
+    if "duckduckgo.com" in (parsed.hostname or ""):
+     target=parse_qs(parsed.query).get("uddg",[""])[0]
+     if target: raw=unquote(target)
+    label=anchor.get_text(" ",strip=True)
+    add_candidate(raw,label)
+   log.info("%s: DuckDuckGo query %s discovered %s additional product URLs (%s total)",retailer,term_index,len(found)-added_before,len(found))
+  except (requests.RequestException,ValueError) as e:
+   log.warning("%s: independent product search query %s failed: %s",retailer,term_index,str(e)[:160])
  # Search-engine results supplement retailer catalog pages, sitemaps and curated seeds.
  products=[]; c=conn()
  priority=("30th","delta-reign","ascended-heroes","chaos-rising","pitch-black","prismatic","mega-evolution","151","charizard","booster-bundle","elite-trainer")
  candidate_limit=500 if retailer=="Target" else 150
+ if max_candidates is not None: candidate_limit=max(1,min(candidate_limit,int(max_candidates)))
  candidates=sorted(found.items(),key=lambda item:(0 if any(term in (item[0]+" "+item[1]).lower() for term in priority) else 1))[:candidate_limit]
  def fetch_candidate(item):
   u,title=item
@@ -626,10 +644,32 @@ def search_products(retailer, progress_callback=None):
  for (candidate_index,((u,title),page)) in enumerate(fetched,1):
   try:
    if page is None:
-    log.info("%s candidate %s: request failed",retailer,candidate_index)
+    # A blocked page is not evidence of out-of-stock. Retain only candidates
+    # whose independent catalog/search title identifies an actual TCG item.
+    if is_pokemon_tcg_title(title) and title.lower() not in ("pokemon tcg elite trainer box","pokemon trading card product"):
+     t=now()
+     c.execute("""INSERT INTO products(retailer,title,url,availability,source,first_seen,last_seen,last_checked,
+      seller_verified,seller_name,popularity_score,popularity_reason,discovery_sources,stock_checked_at)
+      VALUES(?,?,?,'unknown','discovered URL; retailer page blocked',?,?,?,0,'Seller not verified',0,
+      'Seller/product page not accessible','Retailer catalog/search result; product page blocked',?) ON CONFLICT(url) DO NOTHING""",
+      (retailer,title,u,t,t,t,t))
+     products.append({"retailer":retailer,"title":title,"url":u,"price":None,"availability":"unknown",
+      "seller":None,"seller_verified":False,"popularity_score":0,"popularity_reason":"Seller/product page not accessible"})
+     log.info("%s candidate %s retained as discovered/unverified: %s",retailer,candidate_index,title[:100])
+    else:
+     log.info("%s candidate %s: request failed; no trustworthy product title to retain",retailer,candidate_index)
     continue
    if not page.ok:
-    log.info("%s candidate %s: retailer page HTTP %s",retailer,candidate_index,page.status_code)
+    log.info("%s candidate %s: retailer page HTTP %s; availability remains unknown",retailer,candidate_index,page.status_code)
+    if is_pokemon_tcg_title(title) and title.lower() not in ("pokemon tcg elite trainer box","pokemon trading card product"):
+     t=now()
+     c.execute("""INSERT INTO products(retailer,title,url,availability,source,first_seen,last_seen,last_checked,
+      seller_verified,seller_name,popularity_score,popularity_reason,discovery_sources,stock_checked_at)
+      VALUES(?,?,?,'unknown','discovered URL; retailer page blocked',?,?,?,0,'Seller not verified',0,
+      'Seller/product page not accessible','Retailer catalog/search result; product page blocked',?) ON CONFLICT(url) DO NOTHING""",
+      (retailer,title,u,t,t,t,t))
+     products.append({"retailer":retailer,"title":title,"url":u,"price":None,"availability":"unknown",
+      "seller":None,"seller_verified":False,"popularity_score":0,"popularity_reason":"Seller/product page not accessible"})
     continue
    ps=BeautifulSoup(page.text,"html.parser")
    page_text=ps.get_text(" ",strip=True)
@@ -693,19 +733,73 @@ def search_products(retailer, progress_callback=None):
    log.info("%s verified: %s | online=%s | price=%s",retailer,title[:100],stock,price)
    score,reason=popularity_for(title,verification_text)
    t=now()
-   c.execute("""INSERT INTO products(retailer,title,url,price,availability,source,first_seen,last_seen,last_checked,seller_verified,seller_name,popularity_score,popularity_reason,discovery_sources,stock_checked_at)
-    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(url) DO UPDATE SET title=excluded.title,
+   interval=product_check_interval(score)
+   next_due=(datetime.now(timezone.utc)+timedelta(seconds=interval)).isoformat()
+   c.execute("""INSERT INTO products(retailer,title,url,price,availability,source,first_seen,last_seen,last_checked,seller_verified,seller_name,popularity_score,popularity_reason,discovery_sources,stock_checked_at,check_interval_seconds,next_check_at)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(url) DO UPDATE SET title=excluded.title,
     price=COALESCE(excluded.price,products.price),seller_verified=1,seller_name=excluded.seller_name,
     popularity_score=excluded.popularity_score,popularity_reason=excluded.popularity_reason,
     availability=excluded.availability,source=excluded.source,last_seen=excluded.last_seen,
-    last_checked=excluded.last_checked,discovery_sources=excluded.discovery_sources,stock_checked_at=excluded.stock_checked_at""",
-    (retailer,title,u,price,stock,"retailer product page",t,t,t,1,seller,score,reason,"Retailer catalog/sitemap + free Bing RSS search + curated seeds",t))
-   products.append({"retailer":retailer,"title":title,"url":u,"price":price,"availability":stock,"seller":seller,"popularity_score":score,"popularity_reason":reason})
+    last_checked=excluded.last_checked,discovery_sources=excluded.discovery_sources,stock_checked_at=excluded.stock_checked_at,
+    check_interval_seconds=excluded.check_interval_seconds,next_check_at=excluded.next_check_at""",
+    (retailer,title,u,price,stock,"retailer product page",t,t,t,1,seller,score,reason,"Retailer catalog/sitemap + Bing RSS + DuckDuckGo + curated seeds",t,interval,next_due))
+   products.append({"retailer":retailer,"title":title,"url":u,"price":price,"availability":stock,"seller":seller,"seller_verified":True,"popularity_score":score,"popularity_reason":reason})
   except Exception as e:
    log.warning("Retailer product page parse failed for %s (%s): %s",retailer,u,e)
+ for listing in products:
+  normalized=normalize_product_title(listing.get("title"))
+  if not normalized: continue
+  stamp=now()
+  c.execute("INSERT OR IGNORE INTO product_catalog(title,normalized_title,created_at,updated_at) VALUES(?,?,?,?)",(listing["title"],normalized,stamp,stamp))
+  catalog=c.execute("SELECT id,track_all FROM product_catalog WHERE normalized_title=?",(normalized,)).fetchone()
+  if catalog:
+   c.execute("UPDATE products SET catalog_product_id=?,monitor_enabled=? WHERE url=?",(catalog["id"],int(catalog["track_all"]),listing["url"]))
  c.commit(); c.close()
  log.info("%s: %s retailer-owned Pokémon TCG product pages verified from %s candidates",retailer,len(products),len(found))
  return products
+
+def product_check_interval(popularity_score):
+ score=int(popularity_score or 0)
+ if score>=25: return 300
+ if score>=15: return 600
+ return 1800
+
+def monitor_due_products(progress_callback=None, limit=60):
+ # Monitor due, verified product URLs independently of broad catalog discovery.
+ c=conn(); stamp=now()
+ rows=[dict(x) for x in c.execute("""SELECT * FROM products WHERE seller_verified=1 AND monitor_enabled=1 AND (next_check_at IS NULL OR next_check_at='' OR next_check_at<=?) ORDER BY popularity_score DESC,COALESCE(next_check_at,'') ASC LIMIT ?""",(stamp,int(limit)))]
+ checked=0; changed=0; restocks=0; unknown=0; errors=0
+ for idx,product in enumerate(rows,1):
+  old_status=product.get('availability') or 'unknown'; new_status='unknown'; evidence=''
+  try:
+   page=retailer_get(product['url'],headers=HEADERS,timeout=18)
+   if (not page.ok) or re.search(r'captcha|robot or human|verify you are human|access denied|unusual traffic',page.text[:30000],re.I):
+    evidence='Retailer page unavailable or blocked; availability remains unknown'
+   else:
+    soup=BeautifulSoup(page.text,'html.parser')
+    visible=soup.get_text(' ',strip=True)
+    embedded=' '.join(x.get_text(' ',strip=True) for x in soup.select("script[type='application/ld+json'],script#__NEXT_DATA__,script[type='application/json']"))
+    verified,seller=verify_retailer_seller(product['retailer'],(visible+' '+embedded)[:500000])
+    if verified:
+     new_status=online_stock_status(visible,embedded+' '+page.text,product['retailer'])
+     evidence='Retailer page checked; seller verified as '+str(seller)+'; signal: '+new_status
+    else: evidence='Seller could not be re-verified; availability remains unknown'
+  except Exception as exc:
+   errors+=1; evidence='Check failed: '+str(exc)[:220]
+  if new_status=='unknown': unknown+=1
+  if new_status!=old_status: changed+=1
+  checked_at=now(); interval=product_check_interval(product.get('popularity_score'))
+  due=(datetime.now(timezone.utc)+timedelta(seconds=interval)).isoformat()
+  confirmed_old=product.get('last_confirmed_availability') or (old_status if old_status in ('in_stock','out_of_stock') else 'unknown')
+  c.execute("""UPDATE products SET availability=?,last_confirmed_availability=CASE WHEN ? IN ('in_stock','out_of_stock') THEN ? ELSE last_confirmed_availability END,last_checked=?,stock_checked_at=?,check_interval_seconds=?,next_check_at=?,last_status_change=CASE WHEN availability<>? THEN ? ELSE last_status_change END WHERE id=?""",(new_status,new_status,new_status,checked_at,checked_at,interval,due,new_status,checked_at,product['id']))
+  c.execute("INSERT INTO product_stock_history(product_id,checked_at,status,price,source,evidence) VALUES(?,?,?,?,?,?)",(product['id'],checked_at,new_status,product.get('price'),'retailer product page',evidence[:500]))
+  if confirmed_old=='out_of_stock' and new_status=='in_stock':
+   c.execute("INSERT INTO restock_events(product_id,retailer,title,url,detected_at,previous_status,current_status) VALUES(?,?,?,?,?,?,?)",(product['id'],product['retailer'],product['title'],product['url'],checked_at,old_status,new_status))
+   restocks+=1
+  checked+=1
+  if progress_callback: progress_callback(idx,len(rows),'Monitoring '+str(idx)+'/'+str(len(rows))+': '+product['title'][:90])
+ c.commit(); c.close()
+ return {'checked':checked,'status_changes':changed,'restocks':restocks,'unknown':unknown,'errors':errors,'message':'Product-first monitor checked '+str(checked)+' due verified listings; '+str(restocks)+' confirmed restock transitions; '+str(unknown)+' unknown; '+str(errors)+' errors.'}
 
 def branch_stock_status(blob):
  blob=(blob or "").lower()
@@ -832,7 +926,7 @@ def run_scan(kind):
    update_scan_progress(rid,1,"Discovering physical store locations",0,1)
    n=discover_stores();total+=n;notes.append(f"{n} physical store locations discovered")
    update_scan_progress(rid,10 if kind=="all" else 95,"Physical store directory refreshed",1,1)
-  if kind in ("all","products"):
+  if kind in ("all","products","discover"):
    retailer_names=list(RETAILERS)
    for idx,retailer in enumerate(retailer_names,1):
     phase_pct=(10+int(idx*60/len(retailer_names))) if kind=="all" else int(idx*95/len(retailer_names))
@@ -845,8 +939,11 @@ def run_scan(kind):
       bounded=max(0.0,min(0.99,float(fraction)))
       pct=10+int(60*(idx-1+bounded)/len(retailer_names)) if kind=="all" else int(95*(idx-1+bounded)/len(retailer_names))
       update_scan_progress(rid,pct,detail,idx-1,len(retailer_names))
-     n=len(search_products(retailer,progress_callback=retailer_progress));total+=n;notes.append(f"{retailer}: {n} product pages")
-     retailer_status="successful";retailer_detail=f"Scan completed; {n} verified product pages"
+     retailer_products=search_products(retailer,progress_callback=retailer_progress)
+     n=len(retailer_products); verified_n=sum(1 for p in retailer_products if p.get("seller_verified"))
+     total+=n;notes.append(f"{retailer}: {n} discovered listings ({verified_n} first-party verified)")
+     retailer_status="successful" if n and verified_n==n else ("partial" if n else "unsuccessful")
+     retailer_detail=f"{n} discovered listings; {verified_n} first-party verified; {n-verified_n} unverified/blocked; availability unknown unless explicitly confirmed"
     except Exception as e:
      retailer_failures.append(retailer)
      notes.append(f"{retailer}: FAILED — {str(e)[:100]}")
@@ -863,6 +960,10 @@ def run_scan(kind):
     pct=base+int(span*current/max(1,work_total))
     update_scan_progress(rid,pct,phase,current,work_total)
    result=scan_store_inventory(progress_callback=inventory_progress);total+=result["confirmed_products"];notes.append(result["message"])
+  if kind in ("all","monitor"):
+   update_scan_progress(rid,92,"Checking due verified product listings",0,1)
+   monitor_result=monitor_due_products()
+   total+=monitor_result["checked"]; notes.append(monitor_result["message"])
   msg="; ".join(notes)
   final_status="partial" if retailer_failures else "completed"
   final_phase="Completed with retailer errors" if retailer_failures else "Completed"
@@ -883,18 +984,20 @@ def run_scan(kind):
 HTML="""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PokeTrack Radar</title><style>
 :root{color-scheme:dark;--bg:#090e19;--panel:#121b2b;--line:#26364d;--muted:#9aabc2;--accent:#62d6c5;--gold:#f5c76b}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:#edf4ff;font:15px system-ui}header{padding:24px max(18px,calc((100% - 1240px)/2));background:#101a2a;border-bottom:1px solid var(--line)}h1{margin:0;font-size:26px}header p,.muted{color:var(--muted)}main{max-width:1240px;margin:auto;padding:20px}.grid{display:grid;grid-template-columns:repeat(5,1fr);gap:12px}.panel,.stat{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:14px}.stat b{font-size:25px;display:block}.toolbar{display:flex;gap:10px;flex-wrap:wrap;margin:12px 0}.toolbar input,.toolbar select,button{background:#1b2940;color:#fff;border:1px solid #3b506c;border-radius:9px;padding:11px}button{cursor:pointer;background:#176e68;border:0;font-weight:700}.tabs{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}.tabs button{background:#24344d}.tabs button.active{background:#176e68}.item{padding:12px 0;border-top:1px solid var(--line);display:flex;justify-content:space-between;gap:12px}.item a{color:var(--accent)}.pill{border:1px solid #465b74;border-radius:20px;padding:3px 8px;font-size:12px;white-space:nowrap}.ok{color:#8ee0a9}.warn{color:var(--gold)}.scan-progress{margin-top:14px;padding:12px;background:#0d1625;border:1px solid var(--line);border-radius:10px}.scan-progress-head{display:flex;justify-content:space-between;gap:12px;align-items:center;margin-bottom:8px}.progress-track{height:12px;background:#26364d;border-radius:20px;overflow:hidden}.progress-fill{height:100%;width:0;background:var(--accent);transition:width .35s ease;border-radius:20px}.progress-meta{display:flex;justify-content:space-between;gap:10px;margin-top:7px;font-size:12px;color:var(--muted)}@media(max-width:760px){.grid{grid-template-columns:repeat(2,1fr)}.item{display:block}.item .pill{display:inline-block;margin-top:6px}}
 </style></head><body><header><h1>⚡ PokeTrack Radar</h1><p>Physical store discovery · Pokémon product listings · Winchester, VA 22601 · 80-mile radius</p></header><main>
-<section class="panel"><h2>Retailer scan status</h2><p class="muted">Latest product-listing scan result for each retailer. Successful means the retailer scan completed without an application error; product count shows verified product pages found.</p><div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;text-align:left"><thead><tr><th style="padding:10px;border-bottom:1px solid var(--line)">Business</th><th style="padding:10px;border-bottom:1px solid var(--line)">Scan status</th><th style="padding:10px;border-bottom:1px solid var(--line)">Verified products</th><th style="padding:10px;border-bottom:1px solid var(--line)">Last checked</th></tr></thead><tbody id="retailerScanRows"><tr><td colspan="4" class="muted" style="padding:10px">No retailer scan results yet.</td></tr></tbody></table></div></section>
-<div class="grid"><div class="stat"><b id="stores">—</b><span class="muted">Physical stores found</span></div><div class="stat"><b id="products">—</b><span class="muted">Product listings</span></div><div class="stat"><b id="stock">—</b><span class="muted">In-store products confirmed</span></div><div class="stat"><b id="onlineStock">—</b><span class="muted">Online products in stock (retailer-reported)</span></div><div class="stat"><b id="last">—</b><span class="muted">Last completed scan</span></div></div>
+<section class="panel"><h2>Retailer scan status</h2><p class="muted">Latest product-listing scan result for each retailer. Discovered listings include unverified candidates; seller verification and stock status are tracked separately. Blocked pages remain unknown.</p><div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;text-align:left"><thead><tr><th style="padding:10px;border-bottom:1px solid var(--line)">Business</th><th style="padding:10px;border-bottom:1px solid var(--line)">Scan status</th><th style="padding:10px;border-bottom:1px solid var(--line)">Discovered listings</th><th style="padding:10px;border-bottom:1px solid var(--line)">Last checked</th></tr></thead><tbody id="retailerScanRows"><tr><td colspan="4" class="muted" style="padding:10px">No retailer scan results yet.</td></tr></tbody></table></div></section>
+<div class="grid"><div class="stat"><b id="stores">—</b><span class="muted">Physical stores found</span></div><div class="stat"><b id="products">—</b><span class="muted">Product listings</span></div><div class="stat"><b id="stock">—</b><span class="muted">In-store products confirmed</span></div><div class="stat"><b id="onlineStock">—</b><span class="muted">Verified online products in stock</span></div><div class="stat"><b id="last">—</b><span class="muted">Last completed scan</span></div></div>
 <section class="panel"><h2>Radar controls</h2><p class="muted">Store locations come from a researched retailer branch directory. Online stock is counted separately from physical-store stock. Online counts include only verified retailer-owned product pages that explicitly report online availability. Physical-store counts require branch-specific evidence; blocked or unconfirmed results remain unknown.</p><div class="toolbar"><button onclick="scan('all')">Run full scan</button><button onclick="scan('stores')">Refresh store directory</button><button onclick="scan('products')">Scan product listings</button><button onclick="scan('inventory')">Browser-based store stock scan</button><span id="msg" class="muted">Ready</span></div><div class="scan-progress"><div class="scan-progress-head"><b id="progressPhase">No scan running</b><b id="progressPercent">0%</b></div><div class="progress-track"><div id="progressFill" class="progress-fill"></div></div><div class="progress-meta"><span id="progressCount">Waiting for scan</span><span id="progressState">Idle</span></div></div></section>
-<div class="tabs"><button class="active" onclick="tab('stores',this)">Physical stores</button><button onclick="tab('products',this)">Product listings</button><button onclick="tab('history',this)">Scan history</button></div>
-<section class="panel"><div class="toolbar"><input id="q" placeholder="Filter by store, city, product…" oninput="draw()"><select id="retailer" onchange="draw()"><option value="">All retailers</option></select><select id="availability" onchange="draw()"><option value="">All availability</option><option value="in_stock">Explicitly in stock</option><option value="out_of_stock">Explicitly sold out</option><option value="unknown">Unknown</option></select></div><div id="list" class="muted">Loading…</div></section>
+<div class="tabs"><button class="active" onclick="tab('stores',this)">Physical stores</button><button onclick="tab('catalog',this)">Tracked products</button><button onclick="tab('products',this)">Product listings</button><button onclick="tab('history',this)">Scan history</button></div>
+<section class="panel"><div class="toolbar"><input id="q" placeholder="Filter by store, city, product…" oninput="draw()"><select id="retailer" onchange="draw()"><option value="">All retailers</option></select><select id="availability" onchange="draw()"><option value="">All availability</option><option value="in_stock">Explicitly in stock</option><option value="out_of_stock">Explicitly sold out</option><option value="unknown">Unknown</option></select></div><details style="margin:10px 0"><summary>Request a missing Pokémon product</summary><form onsubmit="requestProduct(event)" style="display:grid;gap:8px;padding:10px 0"><input name="product_title" required placeholder="Product name"><input name="retailer" placeholder="Retailer (optional)"><input name="product_url" placeholder="Retailer product URL (optional)"><input name="notes" placeholder="Notes (optional)"><button type="submit">Submit product request</button></form></details><div id="list" class="muted">Loading…</div></section>
 <p class="muted">Store locations are loaded from the researched branch directory. No map service is used. Product links open retailer websites. Availability can change and must be confirmed with the retailer.</p></main><script>
-let mode='stores',stores=[],products=[],history=[],inventory=[],retailerScanStatuses=[];function tab(m,b){mode=m;document.querySelectorAll('.tabs button').forEach(x=>x.classList.remove('active'));b.classList.add('active');draw()}
-async function load(){try{let [a,b,c,d,e,f]=await Promise.all(['/api/stores','/api/products','/api/history','/api/summary','/api/inventory','/api/retailer-scan-status'].map(x=>fetch(x).then(r=>r.json())));stores=a.stores||[];products=b.products||[];history=c.runs||[];inventory=e.inventory||[];retailerScanStatuses=f.retailers||[];renderRetailerScanStatuses();renderProgress();document.getElementById('stores').textContent=stores.length;document.getElementById('products').textContent=products.length;document.getElementById('stock').textContent=inventory.filter(x=>x.status==='in_stock').length;document.getElementById('onlineStock').textContent=products.filter(x=>x.availability==='in_stock').length;document.getElementById('last').textContent=d.last_scan?new Date(d.last_scan).toLocaleString():'—';let opts=[...new Set([...stores,...products].map(x=>x.retailer))].sort();document.getElementById('retailer').innerHTML='<option value="">All retailers</option>'+opts.map(x=>'<option>'+esc(x)+'</option>').join('');draw()}catch(e){document.getElementById('list').textContent='Could not load dashboard data: '+e}}
+let mode='stores',stores=[],products=[],catalog=[],history=[],inventory=[],retailerScanStatuses=[];function tab(m,b){mode=m;document.querySelectorAll('.tabs button').forEach(x=>x.classList.remove('active'));b.classList.add('active');draw()}
+async function load(){try{let [a,b,c,d,e,f,g]=await Promise.all(['/api/stores','/api/products','/api/history','/api/summary','/api/inventory','/api/retailer-scan-status','/api/catalog'].map(x=>fetch(x).then(r=>r.json())));stores=a.stores||[];products=b.products||[];history=c.runs||[];inventory=e.inventory||[];retailerScanStatuses=f.retailers||[];catalog=g.catalog||[];renderRetailerScanStatuses();renderProgress();document.getElementById('stores').textContent=stores.length;document.getElementById('products').textContent=products.length;document.getElementById('stock').textContent=inventory.filter(x=>x.status==='in_stock').length;document.getElementById('onlineStock').textContent=products.filter(x=>x.seller_verified===1&&x.availability==='in_stock').length;document.getElementById('last').textContent=d.last_scan?new Date(d.last_scan).toLocaleString():'—';let opts=[...new Set([...stores,...products].map(x=>x.retailer))].sort();document.getElementById('retailer').innerHTML='<option value="">All retailers</option>'+opts.map(x=>'<option>'+esc(x)+'</option>').join('');draw()}catch(e){document.getElementById('list').textContent='Could not load dashboard data: '+e}}
 function renderRetailerScanStatuses(){let el=document.getElementById('retailerScanRows');if(!retailerScanStatuses.length){el.innerHTML='<tr><td colspan="4" class="muted" style="padding:10px">No retailer scan results yet. Run a product-listings scan.</td></tr>';return}el.innerHTML=retailerScanStatuses.map(x=>'<tr><td style="padding:10px;border-bottom:1px solid var(--line)"><b>'+esc(x.retailer)+'</b></td><td style="padding:10px;border-bottom:1px solid var(--line)"><span class="pill '+(x.status==='successful'?'ok':x.status==='unsuccessful'?'warn':'')+'">'+(x.status==='successful'?'Successful':x.status==='unsuccessful'?'Unsuccessful':esc(x.status))+'</span></td><td style="padding:10px;border-bottom:1px solid var(--line)">'+Number(x.product_count||0)+'</td><td style="padding:10px;border-bottom:1px solid var(--line)">'+esc(x.checked_at?new Date(x.checked_at).toLocaleString():'—')+'</td></tr>').join('')}
 function renderProgress(){let run=history.find(x=>x.status==='running')||history[0];let active=run&&run.status==='running';let pct=run?Number(run.progress||0):0;document.getElementById('progressFill').style.width=pct+'%';document.getElementById('progressPercent').textContent=pct+'%';document.getElementById('progressPhase').textContent=run?(run.phase|| (active?'Scan running':'Last scan')):'No scan running';document.getElementById('progressCount').textContent=run&&Number(run.total)>0?(Number(run.current||0)+' / '+Number(run.total)+' steps'):(active?'Working…':'Waiting for scan');document.getElementById('progressState').textContent=active?'In progress':run?run.status:'Idle';if(run&&run.status==='completed'){document.getElementById('progressFill').style.width='100%';document.getElementById('progressPercent').textContent='100%'}}
 function esc(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
-function draw(){let q=document.getElementById('q').value.toLowerCase(),r=document.getElementById('retailer').value,a=document.getElementById('availability').value;let rows=mode==='stores'?[...stores].sort((a,b)=>Number(b.in_stock_products||0)-Number(a.in_stock_products||0)||Number(b.online_in_stock_products||0)-Number(a.online_in_stock_products||0)||Number(a.distance||0)-Number(b.distance||0)):mode==='products'?products:history;rows=rows.filter(x=>(!r||x.retailer===r)&&(!a||x.availability===a)&&JSON.stringify(x).toLowerCase().includes(q));document.getElementById('list').innerHTML=rows.length?rows.map(x=>mode==='stores'?'<div class="item"><div><b>'+esc(x.name)+'</b><div class="muted">'+esc(x.retailer)+' · '+esc(x.address||x.city||'Address not listed')+'</div><div class="muted">'+Number(x.distance).toFixed(1)+' miles from 22601 · <a href="'+esc(x.source_url)+'" target="_blank">Store page</a></div><div class="grid" style="grid-template-columns:repeat(2,minmax(0,1fr));margin:12px 0"><div class="stat"><b>'+(x.inventory_check_status==='checked'||x.inventory_check_status==='partial'?Number(x.in_stock_products||0):'—')+'</b><span class="muted">In-store products confirmed at this branch</span><div class="muted">'+esc(x.inventory_check_status==='unsupported'?'Branch check not supported':x.inventory_check_status==='error'?'Branch check failed':x.inventory_check_status==='checked'||x.inventory_check_status==='partial'?'Based on branch-specific checks':'Not checked')+'</div></div><div class="stat"><b>'+Number(x.online_in_stock_products||0)+'</b><span class="muted">Online products in stock</span><div class="muted">Retailer-wide · '+Number(x.online_listings||0)+' verified listings; not branch-specific</div></div></div><details><summary>Online inventory · '+Number(x.online_in_stock_products||0)+' in stock / '+Number(x.online_listings||0)+' total retailer listings</summary>'+((products.filter(p=>p.retailer===x.retailer&&p.availability==='in_stock').length)?products.filter(p=>p.retailer===x.retailer&&p.availability==='in_stock').map(p=>'<div class="muted"><a href="'+esc(p.url)+'" target="_blank">'+esc(p.title)+'</a> · '+esc(p.price||'Price not listed')+' · In stock online</div>').join(''):'<div class="muted">No verified online in-stock listings currently recorded for this retailer.</div>')+'</details><details><summary>View branch inventory</summary>'+((inventory.filter(y=>y.store_id===x.id).length)?inventory.filter(y=>y.store_id===x.id).map(y=>'<div class="muted">'+esc(y.product_title)+' — '+(y.status==='in_stock'?'In stock — '+esc(y.quantity_label):y.status==='out_of_stock'?'Out of stock':'Unknown')+' · '+esc(y.checked_at||'')+' · <a href="'+esc(y.source_url)+'" target="_blank">Retailer product page</a><div class="muted">'+esc(y.detail||'')+'</div></div>').join(''):'<div class="muted">No verified branch-specific product results. This does not mean the store is out of stock.</div>')+'</details></div><span class="pill">'+esc(x.inventory_check_time?'Checked '+new Date(x.inventory_check_time).toLocaleString():'Not checked')+'</span></div>':mode==='products'?'<div class="item"><div><b><a href="'+esc(x.url)+'" target="_blank">'+esc(x.title)+'</a></b><div class="muted">'+esc(x.retailer)+' · '+esc(x.price||'Price not listed')+' · '+esc(x.seller_name||'Seller not listed')+'</div><div class="muted">Checked '+esc(x.stock_checked_at||x.last_checked||'unknown')+'</div></div><span class="pill">'+(x.availability==='in_stock'?'In stock':x.availability==='out_of_stock'?'Out of stock':'Unknown')+'</span></div>':'<div class="item"><div><b>'+esc(x.kind)+' · '+esc(x.status)+'</b><div class="muted">'+esc(x.message)+'</div></div><span class="pill">'+esc(x.started_at)+'</span></div>').join(''):'<p class="muted">No matching records yet. Run a scan to populate this section.</p>'}
+function draw(){let q=document.getElementById('q').value.toLowerCase(),r=document.getElementById('retailer').value,a=document.getElementById('availability').value;if(mode==='catalog'){let items=catalog.filter(x=>JSON.stringify(x).toLowerCase().includes(q)&&(!r||x.offers.some(o=>o.retailer===r)));document.getElementById('list').innerHTML=items.length?items.map(x=>'<div class="item"><div><b>'+esc(x.title)+'</b><div class="muted">'+x.offers.length+' retailer offer(s) · '+(x.offers.filter(o=>o.seller_verified).length)+' first-party verified</div><details><summary>Retailer offers</summary>'+x.offers.map(o=>'<div class="muted"><a href="'+esc(o.url)+'" target="_blank">'+esc(o.retailer)+' · '+esc(o.title)+'</a> · '+(o.seller_verified?'Verified seller':'Unverified seller')+' · '+esc(o.availability)+' · '+esc(o.price||'Price not listed')+'</div>').join('')+'</details></div><button onclick="trackAll('+x.id+','+(!x.track_all)+')">'+(x.track_all?'Pause Track All':'Track All')+'</button></div>').join(''):'<p class="muted">No tracked product groups yet. Run product discovery to populate the catalog.</p>';return;}let rows=mode==='stores'?[...stores].sort((a,b)=>Number(b.in_stock_products||0)-Number(a.in_stock_products||0)||Number(b.online_in_stock_products||0)-Number(a.online_in_stock_products||0)||Number(a.distance||0)-Number(b.distance||0)):mode==='products'?products:history;rows=rows.filter(x=>(!r||x.retailer===r)&&(!a||x.availability===a)&&JSON.stringify(x).toLowerCase().includes(q));document.getElementById('list').innerHTML=rows.length?rows.map(x=>mode==='stores'?'<div class="item"><div><b>'+esc(x.name)+'</b><div class="muted">'+esc(x.retailer)+' · '+esc(x.address||x.city||'Address not listed')+'</div><div class="muted">'+Number(x.distance).toFixed(1)+' miles from 22601 · <a href="'+esc(x.source_url)+'" target="_blank">Store page</a></div><div class="grid" style="grid-template-columns:repeat(2,minmax(0,1fr));margin:12px 0"><div class="stat"><b>'+(x.inventory_check_status==='checked'||x.inventory_check_status==='partial'?Number(x.in_stock_products||0):'—')+'</b><span class="muted">In-store products confirmed at this branch</span><div class="muted">'+esc(x.inventory_check_status==='unsupported'?'Branch check not supported':x.inventory_check_status==='error'?'Branch check failed':x.inventory_check_status==='checked'||x.inventory_check_status==='partial'?'Based on branch-specific checks':'Not checked')+'</div></div><div class="stat"><b>'+Number(x.online_in_stock_products||0)+'</b><span class="muted">Online products in stock</span><div class="muted">Retailer-wide · '+Number(x.online_listings||0)+' verified listings; not branch-specific</div></div></div><details><summary>Online inventory · '+Number(x.online_in_stock_products||0)+' in stock / '+Number(x.online_listings||0)+' total retailer listings</summary>'+((products.filter(p=>p.retailer===x.retailer&&p.availability==='in_stock').length)?products.filter(p=>p.retailer===x.retailer&&p.availability==='in_stock').map(p=>'<div class="muted"><a href="'+esc(p.url)+'" target="_blank">'+esc(p.title)+'</a> · '+esc(p.price||'Price not listed')+' · In stock online</div>').join(''):'<div class="muted">No verified online in-stock listings currently recorded for this retailer.</div>')+'</details><details><summary>View branch inventory</summary>'+((inventory.filter(y=>y.store_id===x.id).length)?inventory.filter(y=>y.store_id===x.id).map(y=>'<div class="muted">'+esc(y.product_title)+' — '+(y.status==='in_stock'?'In stock — '+esc(y.quantity_label):y.status==='out_of_stock'?'Out of stock':'Unknown')+' · '+esc(y.checked_at||'')+' · <a href="'+esc(y.source_url)+'" target="_blank">Retailer product page</a><div class="muted">'+esc(y.detail||'')+'</div></div>').join(''):'<div class="muted">No verified branch-specific product results. This does not mean the store is out of stock.</div>')+'</details></div><span class="pill">'+esc(x.inventory_check_time?'Checked '+new Date(x.inventory_check_time).toLocaleString():'Not checked')+'</span></div>':mode==='products'?'<div class="item"><div><b><a href="'+esc(x.url)+'" target="_blank">'+esc(x.title)+'</a></b><div class="muted">'+esc(x.retailer)+' · '+esc(x.price||'Price not listed')+' · '+esc(x.seller_name||'Seller not verified')+' · '+(x.seller_verified?'First-party verified':'Unverified listing')+'</div><div class="muted">Checked '+esc(x.stock_checked_at||x.last_checked||'unknown')+'</div></div><span class="pill">'+(x.availability==='in_stock'?'In stock':x.availability==='out_of_stock'?'Out of stock':'Unknown')+'</span></div>':'<div class="item"><div><b>'+esc(x.kind)+' · '+esc(x.status)+'</b><div class="muted">'+esc(x.message)+'</div></div><span class="pill">'+esc(x.started_at)+'</span></div>').join(''):'<p class="muted">No matching records yet. Run a scan to populate this section.</p>'}
+async function trackAll(id,enabled){let r=await fetch('/api/catalog/'+id+'/track',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled})});let d=await r.json();document.getElementById('msg').textContent=d.status||d.error||'Updated';await load()}
+async function requestProduct(event){event.preventDefault();let form=event.target;let payload={product_title:form.product_title.value,retailer:form.retailer.value,product_url:form.product_url.value,notes:form.notes.value};let r=await fetch('/api/product-requests',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});let d=await r.json();document.getElementById('msg').textContent=r.ok?'Product request queued #'+d.request_id:(d.error||'Request failed');if(r.ok)form.reset()}
 async function scan(kind){let m=document.getElementById('msg');m.textContent='Starting scan…';try{let r=await fetch('/api/scan?kind='+kind,{method:'POST'}),d=await r.json();m.textContent=d.message||d.error||'Scan started';if(!r.ok)return;let tries=0;let timer=setInterval(async()=>{tries++;await load();let running=history.some(x=>x.status==='running');if(!running||tries>=180){clearInterval(timer);m.textContent=running?'Scan is still running; you can keep using the dashboard.':'Scan finished. '+(history[0]?.message||'Results refreshed.')}},4000)}catch(e){m.textContent='Scan failed: '+e}}
 load();setInterval(load,60000);
 </script></body></html>"""
@@ -916,7 +1019,45 @@ def api_inventory():
  c=conn();rows=[dict(x) for x in c.execute("""SELECT i.*,s.name AS store_name,s.retailer,s.address,s.city,s.state FROM store_inventory i JOIN stores s ON s.id=i.store_id ORDER BY s.distance,s.retailer,s.name,i.product_title""")];c.close();return jsonify(inventory=rows)
 @app.get("/api/products")
 def api_products():
- c=conn();rows=[dict(x) for x in c.execute("SELECT * FROM products WHERE seller_verified=1 ORDER BY popularity_score DESC,last_seen DESC LIMIT 2000")];c.close();return jsonify(products=rows)
+ c=conn();rows=[dict(x) for x in c.execute("SELECT * FROM products ORDER BY seller_verified DESC,popularity_score DESC,last_seen DESC LIMIT 2000")];c.close();return jsonify(products=rows)
+@app.get("/api/catalog")
+def api_catalog():
+ c=conn();catalogs=[dict(x) for x in c.execute("SELECT * FROM product_catalog ORDER BY title COLLATE NOCASE")];
+ for item in catalogs:
+  item["offers"]=[dict(x) for x in c.execute("SELECT id,retailer,title,url,price,availability,seller_verified,seller_name,popularity_score,last_checked,next_check_at,monitor_enabled FROM products WHERE catalog_product_id=? ORDER BY seller_verified DESC,retailer",(item["id"],))]
+ c.close();return jsonify(catalog=catalogs)
+
+@app.post("/api/catalog/<int:catalog_id>/track")
+def api_catalog_track(catalog_id):
+ payload=request.get_json(silent=True) or {}
+ enabled=payload.get("enabled")
+ if not isinstance(enabled,bool): return jsonify(error="enabled must be true or false"),400
+ c=conn();cur=c.execute("UPDATE product_catalog SET track_all=?,updated_at=? WHERE id=?",(int(enabled),now(),catalog_id))
+ if cur.rowcount: c.execute("UPDATE products SET monitor_enabled=? WHERE catalog_product_id=?",(int(enabled),catalog_id))
+ c.commit();c.close()
+ if not cur.rowcount: return jsonify(error="Product not found"),404
+ return jsonify(status="tracking" if enabled else "paused",track_all=enabled,catalog_product_id=catalog_id)
+@app.get("/api/restock-events")
+def api_restock_events():
+ c=conn();rows=[dict(x) for x in c.execute("SELECT * FROM restock_events ORDER BY id DESC LIMIT 200")];c.close();return jsonify(events=rows)
+
+@app.get("/api/product-requests")
+def api_product_requests():
+ c=conn();rows=[dict(x) for x in c.execute("SELECT * FROM product_requests ORDER BY id DESC LIMIT 200")];c.close();return jsonify(requests=rows)
+
+@app.post("/api/product-requests")
+def create_product_request():
+ payload=request.get_json(silent=True) or {}
+ title=re.sub(r"\s+"," ",str(payload.get("product_title") or "")).strip()[:250]
+ retailer=str(payload.get("retailer") or "").strip()[:80] or None
+ url=str(payload.get("product_url") or "").strip()[:1000] or None
+ notes=str(payload.get("notes") or "").strip()[:1000] or None
+ if not title: return jsonify(error="product_title is required"),400
+ if url:
+  parsed=urlparse(url)
+  if parsed.scheme not in ("http","https") or not parsed.netloc: return jsonify(error="product_url must be an http(s) URL"),400
+ c=conn();cur=c.execute("INSERT INTO product_requests(product_title,retailer,product_url,notes,created_at) VALUES(?,?,?,?,?)",(title,retailer,url,notes,now()));c.commit();request_id=cur.lastrowid;c.close()
+ return jsonify(status="queued",request_id=request_id),201
 @app.get("/api/history")
 def api_history():
  c=conn();rows=[dict(x) for x in c.execute("SELECT * FROM poketrack_scan_runs ORDER BY id DESC LIMIT 100")];c.close();return jsonify(runs=rows)
@@ -926,7 +1067,7 @@ def summary():
 @app.post("/api/scan")
 def api_scan():
  kind=request.args.get("kind","all")
- if kind not in ("all","stores","products","inventory"):return jsonify(error="Invalid scan kind"),400
+ if kind not in ("all","stores","products","inventory","monitor","discover"):return jsonify(error="Invalid scan kind"),400
  if not SCAN_LOCK.acquire(blocking=False):
   return jsonify({"status":"busy","message":"A scan is already running. Please wait for it to finish."}),409
  SCAN_LOCK.release()
