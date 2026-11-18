@@ -562,9 +562,9 @@ def scavio_products_for_retailer(retailer,progress_callback=None):
 
 
 def scavio_inventory_status(value,quantity=None):
- if isinstance(quantity,(int,float)): return "in_stock" if quantity>0 else "out_of_stock"
  if value is True: return "in_stock"
  if value is False: return "out_of_stock"
+ if isinstance(quantity,(int,float)): return "in_stock" if quantity>0 else "out_of_stock"
  if isinstance(value,str):
   v=value.strip().lower()
   if any(x in v for x in ("in_stock","available","instock")): return "in_stock"
@@ -616,6 +616,7 @@ def scavio_refresh_partner_inventory():
   if not warehouses:
    d=scavio_post("/api/v1/costco/warehouses",{"zip":ZIP,"limit":10}); warehouses=(d or {}).get("data",{}).get("warehouses",[])
   ids=[str(w.get("warehouse_id")) for w in warehouses[:10] if w.get("warehouse_id")]
+  warehouse_info={str(w.get("warehouse_id")):w for w in warehouses if w.get("warehouse_id")}
   for p in products["Costco"]:
    num=p.get("scavio_item_id")
    if not num or not ids: continue
@@ -623,7 +624,8 @@ def scavio_refresh_partner_inventory():
    if not d: continue
    db=conn()
    for w in d["data"].get("warehouses",[]):
-    sid=scavio_upsert_store(db,"Costco",w)
+    info={**warehouse_info.get(str(w.get("warehouse_id") or ""),{}),**w}
+    sid=scavio_upsert_store(db,"Costco",info)
     if sid:
      scavio_save_inventory(db,sid,p,scavio_inventory_status(w.get("in_warehouse")),None,"Unit count not provided","Scavio Costco warehouse status only; not a unit count")
      counts["Costco"]+=1
