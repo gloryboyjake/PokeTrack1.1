@@ -3,8 +3,6 @@ name: Retailer product discovery test
 on:
   push:
     branches: [fix/retailer-product-discovery]
-  pull_request:
-    branches: [rebuild/clean-start]
   workflow_dispatch:
 
 jobs:
