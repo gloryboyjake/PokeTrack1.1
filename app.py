@@ -474,7 +474,16 @@ def scavio_products_for_retailer(retailer,progress_callback=None):
    if not store_id: return []
    data=scavio_post("/api/v1/dollargeneral/search",{"query":"Pokemon trading cards","store_id":store_id,"page":1})
   else:
-   payload={"keyword":"Pokemon trading cards","page":1,"count":28} if retailer=="Target" else {"query":"Pokemon trading cards","country":"us","page":1,"page_size":48}
+   if retailer=="Target":
+    payload={"keyword":"Pokemon trading cards","page":1,"count":28}
+   elif retailer=="Costco":
+    warehouse_data=scavio_post("/api/v1/costco/warehouses",{"zip":ZIP,"limit":10})
+    warehouses=(warehouse_data or {}).get("data",{}).get("warehouses",[])
+    nearest_id=str(warehouses[0].get("warehouse_id")) if warehouses else ""
+    payload={"query":"Pokemon trading cards","country":"us","page":1,"page_size":48}
+    if nearest_id: payload["warehouse_id"]=nearest_id
+   else:
+    payload={"query":"Pokemon trading cards","page":1,"page_size":45}
    data=scavio_post(paths[retailer],payload)
   if not data: return []
   items=normalize_items(data)
