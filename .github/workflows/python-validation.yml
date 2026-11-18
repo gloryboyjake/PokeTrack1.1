@@ -16,5 +16,30 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Install app test dependencies
+        run: python -m pip install --disable-pip-version-check Flask requests beautifulsoup4
       - name: Compile Python files
         run: python -m compileall -q app.py
+      - name: Test monitoring schema and product request API
+        env:
+          DB_PATH: /tmp/poketrack-validation.db
+        run: |
+          python - <<'PY'
+          import app
+          c = app.conn()
+          tables = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+          assert {'product_stock_history', 'restock_events', 'product_requests'} <= tables
+          columns = {r[1] for r in c.execute('PRAGMA table_info(products)')}
+          assert {'monitor_enabled', 'check_interval_seconds', 'next_check_at', 'last_status_change'} <= columns
+          c.close()
+          result = app.monitor_due_products()
+          assert result['checked'] == 0
+          client = app.app.test_client()
+          response = client.post('/api/product-requests', json={'product_title': 'Pokémon 30th Celebration ETB', 'retailer': 'Target'})
+          assert response.status_code == 201, response.get_json()
+          request_id = response.get_json()['request_id']
+          listed = client.get('/api/product-requests').get_json()['requests']
+          assert any(x['id'] == request_id for x in listed)
+          assert client.get('/api/restock-events').status_code == 200
+          print('Monitoring schema, empty due queue, product request API, and restock endpoint passed')
+          PY
