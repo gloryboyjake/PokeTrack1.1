@@ -405,6 +405,13 @@ SEED_PRODUCT_URLS={
  "Target":["https://www.target.com/p/-/A-1010892076","https://www.target.com/p/-/A-1011483406"],
  "Walmart":["https://www.walmart.com/ip/15718673510","https://www.walmart.com/ip/20161351456","https://www.walmart.com/ip/20754418655","https://business.walmart.com/ip/POKEMON-SV10-DESTINED-RIVALS-D7-ELITE-TRAINER-BOX/19965460207"],
  "Dollar General":["https://www.dollargeneral.com/p/pok%25c3%25a9mon-trading-card-pack%2C-10-ct/728192507076"],
+ "Sam's Club":[
+  "https://www.samsclub.com/ip/pokemon-4-mini-tins-4-promo-cards-bundle/17593918944",
+  "https://www.samsclub.com/ip/pokemon-poke-ball-two-mini-tins-assorted-styles/13872200589",
+  "https://www.samsclub.com/ip/seort/18430356539",
+  "https://www.samsclub.com/ip/pokemon-paldea-legends-tins-2-pk/16169807769",
+  "https://www.samsclub.com/ip/Pok-mon-Collector-Chest-and-Level-Poke-Ball/15337605373"
+ ],
  "Best Buy":[
   "https://www.bestbuy.com/product/pokemon-trading-card-game-30th-celebration-elite-trainer-box/JJG2TL8XCJ",
   "https://www.bestbuy.com/product/pokemon-trading-card-game-mega-evolution-pitch-black-elite-trainer-box/JJG2TL8J45",
