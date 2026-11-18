@@ -440,7 +440,7 @@ def search_products(retailer, progress_callback=None):
    # small hand-picked sample. Stop at the retailer's last page or a safe ceiling.
    page_urls=[catalog]
    seen_pages=set()
-   while page_urls and len(seen_pages)<(30 if retailer=="Target" else 1):
+   while page_urls and len(seen_pages)<(30 if retailer=="Target" else 10):
     page_url=page_urls.pop(0)
     if page_url in seen_pages: continue
     seen_pages.add(page_url)
@@ -455,20 +455,20 @@ def search_products(retailer, progress_callback=None):
       title=(image_node.get("alt") if image_node else None) or a.get("aria-label") or a.get("title") or ""
      if not title and a.parent: title=a.parent.get_text(" ",strip=True)
      add_candidate(requests.compat.urljoin(page_url,a.get("href","")),title)
-    if retailer=="Target":
-     for selector in ('a[rel="next"]','a[aria-label*="Next" i]','a[data-test*="next" i]'):
+    # Follow retailer-provided next-page links for every catalog, not just Target.
+    for selector in ('a[rel="next"]','a[aria-label*="Next" i]','a[title*="Next" i]','a.next','.pagination a.next'):
       nxt=soup.select_one(selector)
       if nxt and nxt.get("href"):
        nu=requests.compat.urljoin(page_url,nxt["href"])
        if nu not in seen_pages: page_urls.append(nu)
        break
-     if not page_urls and len(seen_pages)<30:
-      from urllib.parse import urlsplit,urlunsplit,parse_qsl,urlencode
-      parts=urlsplit(page_url); params=dict(parse_qsl(parts.query))
-      current=int(params.get("Nao","0") or 0)
-      params["Nao"]=str(current+24)
-      next_url=urlunsplit((parts.scheme,parts.netloc,parts.path,urlencode(params),parts.fragment))
-      if next_url not in seen_pages: page_urls.append(next_url)
+    if retailer=="Target" and not page_urls and len(seen_pages)<30:
+     from urllib.parse import urlsplit,urlunsplit,parse_qsl,urlencode
+     parts=urlsplit(page_url); params=dict(parse_qsl(parts.query))
+     current=int(params.get("Nao","0") or 0)
+     params["Nao"]=str(current+24)
+     next_url=urlunsplit((parts.scheme,parts.netloc,parts.path,urlencode(params),parts.fragment))
+     if next_url not in seen_pages: page_urls.append(next_url)
    def walk_catalog_json(obj):
     if isinstance(obj,dict):
      name=obj.get("name") or obj.get("title") or obj.get("productName")
