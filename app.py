@@ -343,64 +343,6 @@ def online_stock_status(page_text, embedded_text="", retailer=None):
   return "in_stock"
  return "unknown"
 
-RESTOCKR_TERMS_CACHE=[]
-RESTOCKR_TERMS_CACHE_AT=0
-def restockr_product_terms():
- global RESTOCKR_TERMS_CACHE,RESTOCKR_TERMS_CACHE_AT
- if RESTOCKR_TERMS_CACHE and time.time()-RESTOCKR_TERMS_CACHE_AT<21600:
-  return RESTOCKR_TERMS_CACHE
- terms=[]
- # TrackaLacker public Pokemon tracker catalog: product names, not retailer stock truth.
- for page_no in range(1,5):
-  try:
-   url=f"https://www.trackalacker.com/articles/news/pokemon-trackers?page={page_no}"
-   r=requests.get(url,headers=HEADERS,timeout=12); r.raise_for_status()
-   soup=BeautifulSoup(r.text,"html.parser")
-   for a in soup.select('a[href*="/products/showcase/"]'):
-    label=re.sub(r"\s+"," ",a.get_text(" ",strip=True)).strip()
-    label=re.sub(r"^\d+\s+options\s+","",label,flags=re.I)
-    label=re.sub(r"\$\s*[\d,.]+(?:\s*-\s*\$\s*[\d,.]+)?$","",label).strip()
-    if is_pokemon_tcg_title(label) and label.lower() not in [x.lower() for x in terms]:
-     terms.append(label[:120])
-  except requests.RequestException as e:
-   log.warning("TrackaLacker catalog page %s unavailable: %s",page_no,e)
- # Rippr Restockr's daily-updated catalog adds more sealed-product names.
- try:
-  r=requests.get("https://rippr.app/restockr",headers=HEADERS,timeout=20); r.raise_for_status()
-  text=BeautifulSoup(r.text,"html.parser").get_text(" ",strip=True)
-  pattern=re.compile(r"((?:(?:19|20)\d{2}\s+)?Pok[eé]mon[^$]{5,120}?)\s+Pok[eé]mon\s+\$",re.I)
-  for match in pattern.finditer(text):
-   title=re.sub(r"\s+"," ",match.group(1)).strip()
-   if is_pokemon_tcg_title(title) and title.lower() not in [x.lower() for x in terms]:
-    terms.append(title[:120])
- except requests.RequestException as e:
-  log.warning("Rippr Restockr catalog unavailable: %s",e)
- # Card Restock Tracker publishes product-level in-stock and sold-out pages for independent shops.
- try:
-  r=requests.get("https://cardrestocktracker.com/",headers=HEADERS,timeout=20); r.raise_for_status()
-  soup=BeautifulSoup(r.text,"html.parser")
-  for a in soup.select('a[href^="/us/"]'):
-   href=a.get("href","")
-   if "/store/" in href or href.endswith("/retailers"): continue
-   label=re.sub(r"\s+"," ",a.get_text(" ",strip=True)).strip()
-   label=re.split(r"\s+(?:in stock at|sold out)\b",label,flags=re.I)[0].strip()
-   if not label or not re.search(r"booster|elite trainer|etb|collection|blister|tin|deck|card pack",label,re.I): continue
-   title=label if re.search(r"pok[eé]mon",label,re.I) else "Pokemon TCG "+label
-   if is_pokemon_tcg_title(title) and title.lower() not in [x.lower() for x in terms]:
-    terms.append(title[:120])
- except requests.RequestException as e:
-  log.warning("Card Restock Tracker catalog unavailable: %s",e)
- RESTOCKR_TERMS_CACHE=terms[:40]
- RESTOCKR_TERMS_CACHE_AT=time.time()
- log.info("TrackaLacker, Rippr Restockr and Card Restock Tracker supplied %s Pokémon TCG product names",len(RESTOCKR_TERMS_CACHE))
- return RESTOCKR_TERMS_CACHE
-
-TRACKER_CANDIDATES_CACHE={}
-TRACKER_CANDIDATES_CACHE_AT=0
-def tracker_candidates(retailer):
- # TrackaLacker's product detail pages are access-restricted; use its public catalog for product names instead.
- return {}
-
 SEED_PRODUCT_URLS={
  "Target":["https://www.target.com/p/-/A-1010892076","https://www.target.com/p/-/A-1011483406"],
  "Walmart":["https://www.walmart.com/ip/15718673510","https://www.walmart.com/ip/20161351456","https://www.walmart.com/ip/20754418655","https://business.walmart.com/ip/POKEMON-SV10-DESTINED-RIVALS-D7-ELITE-TRAINER-BOX/19965460207"],
