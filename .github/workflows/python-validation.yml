@@ -28,7 +28,7 @@ jobs:
           import app
           c = app.conn()
           tables = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-          assert {'product_stock_history', 'restock_events', 'product_requests'} <= tables
+          assert {'product_catalog', 'product_stock_history', 'restock_events', 'product_requests'} <= tables
           columns = {r[1] for r in c.execute('PRAGMA table_info(products)')}
           assert {'monitor_enabled', 'check_interval_seconds', 'next_check_at', 'last_status_change'} <= columns
           c.close()
@@ -41,5 +41,15 @@ jobs:
           listed = client.get('/api/product-requests').get_json()['requests']
           assert any(x['id'] == request_id for x in listed)
           assert client.get('/api/restock-events').status_code == 200
-          print('Monitoring schema, empty due queue, product request API, and restock endpoint passed')
+          c = app.conn()
+          c.execute("INSERT INTO product_catalog(title,normalized_title,created_at,updated_at) VALUES(?,?,?,?)", ('Test ETB', 'test etb', app.now(), app.now()))
+          catalog_id = c.execute("SELECT id FROM product_catalog WHERE normalized_title='test etb'").fetchone()[0]
+          c.commit()
+          c.close()
+          assert client.get('/api/catalog').status_code == 200
+          paused = client.post(f'/api/catalog/{catalog_id}/track', json={'enabled': False})
+          assert paused.status_code == 200 and paused.get_json()['track_all'] is False
+          resumed = client.post(f'/api/catalog/{catalog_id}/track', json={'enabled': True})
+          assert resumed.status_code == 200 and resumed.get_json()['track_all'] is True
+          print('Monitoring schema, request queue, grouped catalog, Track All controls, and restock endpoint passed')
           PY
