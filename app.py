@@ -292,10 +292,10 @@ def direct_catalog_url(retailer):
  return urls.get(retailer)
 def is_pokemon_tcg_title(title):
  # Exclude licensed books and unrelated Pokémon merchandise.
- title=re.sub(r"\\s+"," ",(title or "").lower()).strip()
+ title=re.sub(r"\s+"," ",(title or "").lower()).strip()
  if not re.search(r'pokemon|pokémon',title): return False
- if re.search(r'\\b(book|paperback|hardcover|story|stories|novel|guide|calendar|advent calendar|figure|plush|costume|apparel|backpack|toy car|lunch box|video game|nintendo switch)\\b',title): return False
- return bool(re.search(r'trading card|\\btc[g]?\\b|booster|elite trainer|\\betb\\b|blister|tin|deck|card pack|card game|pokemon cards|pokémon cards',title))
+ if re.search(r'\b(book|paperback|hardcover|story|stories|novel|guide|calendar|advent calendar|figure|plush|costume|apparel|backpack|toy car|lunch box|video game|nintendo switch)\b',title): return False
+ return bool(re.search(r'trading card|\btc[g]?\b|booster|elite trainer|\betb\b|blister|tin|deck|card pack|card game|pokemon cards|pokémon cards',title))
 def verify_retailer_seller(retailer, page_text):
  text=(page_text or "").lower()
  aliases={"Target":("target",),"Walmart":("walmart",),"Best Buy":("best buy","bestbuy")}
