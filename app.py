@@ -493,11 +493,17 @@ def scavio_products_for_retailer(retailer,progress_callback=None):
    marketplace=bool(item.get("is_marketplace") or item.get("marketplace") or
     item.get("is_third_party") or item.get("third_party"))
    if marketplace: continue
-   if retailer=="Target" and item.get("is_marketplace") is True: continue
-   if seller and retailer.lower().replace("'","") not in seller.lower().replace("'","") and retailer not in ("Sam's Club",):
-    if retailer=="Target" and "target" not in seller.lower(): continue
-    if retailer=="Costco" and "costco" not in seller.lower(): continue
-    if retailer=="Dollar General" and "dollar general" not in seller.lower(): continue
+   if retailer=="Target":
+    # Target search can surface marketplace offers. Only accept a result when
+    # Scavio explicitly marks it first-party or names Target as the seller.
+    if item.get("is_marketplace") is True: continue
+    if not (item.get("is_marketplace") is False or "target" in seller.lower()): continue
+   elif retailer=="Costco" and seller and "costco" not in seller.lower():
+    continue
+   elif retailer=="Dollar General" and seller and "dollar general" not in seller.lower():
+    continue
+   elif retailer=="Sam's Club" and seller and "sam" not in seller.lower():
+    continue
    price=item.get("price") or item.get("formatted_price")
    if price is not None: price=str(price).replace("$","").strip()
    stock_value=item.get("availability_status") or item.get("inventory_status") or item.get("stock_status")
@@ -517,7 +523,7 @@ def scavio_products_for_retailer(retailer,progress_callback=None):
     seller_verified=1,seller_name=excluded.seller_name,popularity_score=excluded.popularity_score,
     popularity_reason=excluded.popularity_reason,discovery_sources=excluded.discovery_sources,
     stock_checked_at=excluded.stock_checked_at""",
-    (retailer,title,url,price,stock,"Scavio API",stamp,stamp,stamp,1,seller or retailer,score,reason,"Scavio retailer search API",stamp))
+    (retailer,title,url,price,stock,"Scavio API",stamp,stamp,stamp,1,seller or (retailer if retailer!="Target" else "Target (first-party flag)"),score,reason,"Scavio retailer search API",stamp))
    found.append({"retailer":retailer,"title":title,"url":url,"price":price,"availability":stock,"seller":seller or retailer,"popularity_score":score,"popularity_reason":reason})
   c.execute("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",(cache_key,now()))
   c.commit(); c.close()
