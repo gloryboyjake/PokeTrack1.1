@@ -417,7 +417,120 @@ def retailer_product_url_is_valid(retailer,url):
  if path.startswith(("/search","/s/","/q/","/c/","/category/","/browse/")): return False
  return True
 
+SCAVIO_BASE_URL="https://api.scavio.dev"
+SCAVIO_CACHE_HOURS=6
+SCAVIO_QUERIES=("Pokemon TCG","Pokemon trading cards")
+def scavio_post(path,payload,timeout=90):
+ key=os.getenv("SCAVIO_API_KEY","").strip()
+ if not key:
+  return None
+ try:
+  response=requests.post(SCAVIO_BASE_URL+path,json=payload,
+   headers={"Authorization":"Bearer "+key,"Content-Type":"application/json"},
+   timeout=timeout)
+  response.raise_for_status()
+  data=response.json()
+  if not isinstance(data,dict) or not isinstance(data.get("data"),dict):
+   raise ValueError("Scavio returned an unexpected response envelope")
+  return data
+ except Exception as e:
+  log.warning("Scavio request %s failed: %s",path,str(e)[:220])
+  return None
+def scavio_products_for_retailer(retailer,progress_callback=None):
+ # A six-hour per-retailer cache prevents the existing 15-minute cron from
+ # consuming free credits repeatedly. A failed request never deletes old rows.
+ paths={"Target":"/api/v1/target/search","Costco":"/api/v1/costco/search",
+  "Sam's Club":"/api/v1/samsclub/search"}
+ if retailer not in paths and retailer!="Dollar General":
+  return []
+ c=conn()
+ cache_key="scavio_last_success_"+retailer.lower().replace(" ","_").replace("&","and")
+ row=c.execute("SELECT value FROM settings WHERE key=?",(cache_key,)).fetchone()
+ if row:
+  try:
+   last=datetime.fromisoformat(row["value"])
+   if (datetime.now(timezone.utc)-last).total_seconds()<SCAVIO_CACHE_HOURS*3600:
+    c.close()
+    return []
+  except Exception: pass
+ c.close()
+ key=os.getenv("SCAVIO_API_KEY","").strip()
+ if not key:
+  return []
+ found=[]
+ def normalize_items(data):
+  body=data.get("data",{})
+  for field in ("products","results","items"):
+   value=body.get(field)
+   if isinstance(value,list): return value
+  return []
+ try:
+  if retailer=="Dollar General":
+   stores_result=scavio_post("/api/v1/dollargeneral/stores",{"zip":ZIP,"radius":RADIUS})
+   if not stores_result: return []
+   store_rows=stores_result["data"].get("stores",[])
+   if not store_rows: return []
+   store_id=str(store_rows[0].get("store_id") or "")
+   if not store_id: return []
+   data=scavio_post("/api/v1/dollargeneral/search",{"query":"Pokemon trading cards","store_id":store_id,"page":1})
+  else:
+   payload={"keyword":"Pokemon trading cards","page":1,"count":28} if retailer=="Target" else {"query":"Pokemon trading cards","country":"us","page":1,"page_size":48}
+   data=scavio_post(paths[retailer],payload)
+  if not data: return []
+  items=normalize_items(data)
+  if not items:
+   log.info("Scavio %s search completed but returned no product rows",retailer)
+  c=conn()
+  for item in items:
+   title=str(item.get("title") or item.get("name") or "").strip()[:250]
+   url=str(item.get("url") or item.get("product_url") or item.get("productUrl") or "").strip()
+   if not title or not url or not is_pokemon_tcg_title(title): continue
+   host=(urlparse(url).hostname or "").lower()
+   expected=RETAILERS[retailer][0]
+   if not (host==expected or host.endswith("."+expected)): continue
+   # Exclude explicitly identified marketplace offers; do not guess seller identity.
+   seller=str(item.get("seller_name") or item.get("seller") or "").strip()
+   marketplace=bool(item.get("is_marketplace") or item.get("marketplace") or
+    item.get("is_third_party") or item.get("third_party"))
+   if marketplace: continue
+   if retailer=="Target" and item.get("is_marketplace") is True: continue
+   if seller and retailer.lower().replace("'","") not in seller.lower().replace("'","") and retailer not in ("Sam's Club",):
+    if retailer=="Target" and "target" not in seller.lower(): continue
+    if retailer=="Costco" and "costco" not in seller.lower(): continue
+    if retailer=="Dollar General" and "dollar general" not in seller.lower(): continue
+   price=item.get("price") or item.get("formatted_price")
+   if price is not None: price=str(price).replace("$","").strip()
+   stock_value=item.get("availability_status") or item.get("inventory_status") or item.get("stock_status")
+   in_stock=item.get("in_stock")
+   qty=item.get("available_quantity")
+   if in_stock is True or (isinstance(qty,(int,float)) and qty>0): stock="in_stock"
+   elif in_stock is False or (isinstance(qty,(int,float)) and qty<=0): stock="out_of_stock"
+   elif isinstance(stock_value,str) and any(x in stock_value.lower() for x in ("in_stock","available")): stock="in_stock"
+   elif isinstance(stock_value,str) and any(x in stock_value.lower() for x in ("out_of_stock","unavailable","sold_out")): stock="out_of_stock"
+   else: stock="unknown"
+   score,reason=popularity_for(title,json.dumps(item,ensure_ascii=False))
+   stamp=now()
+   c.execute("""INSERT INTO products(retailer,title,url,price,availability,source,first_seen,last_seen,last_checked,seller_verified,seller_name,popularity_score,popularity_reason,discovery_sources,stock_checked_at)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(url) DO UPDATE SET title=excluded.title,
+    price=COALESCE(excluded.price,products.price),availability=excluded.availability,
+    last_seen=excluded.last_seen,last_checked=excluded.last_checked,
+    seller_verified=1,seller_name=excluded.seller_name,popularity_score=excluded.popularity_score,
+    popularity_reason=excluded.popularity_reason,discovery_sources=excluded.discovery_sources,
+    stock_checked_at=excluded.stock_checked_at""",
+    (retailer,title,url,price,stock,"Scavio API",stamp,stamp,stamp,1,seller or retailer,score,reason,"Scavio retailer search API",stamp))
+   found.append({"retailer":retailer,"title":title,"url":url,"price":price,"availability":stock,"seller":seller or retailer,"popularity_score":score,"popularity_reason":reason})
+  c.execute("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",(cache_key,now()))
+  c.commit(); c.close()
+  credits=data.get("credits_used")
+  remaining=data.get("credits_remaining")
+  log.info("Scavio %s: %s Pokémon TCG listings accepted; credits_used=%s credits_remaining=%s",retailer,len(found),credits,remaining)
+  return found
+ except Exception as e:
+  log.exception("Scavio integration failed for %s: %s",retailer,str(e)[:200])
+  return []
+
 def search_products(retailer, progress_callback=None):
+ scavio_found=scavio_products_for_retailer(retailer,progress_callback)
  global GOOGLE_RATE_LIMITED
  catalog=direct_catalog_url(retailer)
  domain=RETAILERS[retailer][0]
@@ -705,7 +818,7 @@ def search_products(retailer, progress_callback=None):
    log.warning("Retailer product page parse failed for %s (%s): %s",retailer,u,e)
  c.commit(); c.close()
  log.info("%s: %s retailer-owned Pokémon TCG product pages verified from %s candidates",retailer,len(products),len(found))
- return products
+ return products+scavio_found
 
 def branch_stock_status(blob):
  blob=(blob or "").lower()
