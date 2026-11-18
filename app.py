@@ -535,6 +535,69 @@ def scavio_products_for_retailer(retailer,progress_callback=None):
   log.exception("Scavio integration failed for %s: %s",retailer,str(e)[:200])
   return []
 
+
+def scavio_target_inventory():
+ # Target availability is a separate endpoint from product search. Limit to
+ # three high-priority products every six hours to protect the free credit pool.
+ if not os.getenv("SCAVIO_API_KEY","").strip(): return 0
+ c=conn()
+ cache=c.execute("SELECT value FROM settings WHERE key='scavio_target_inventory_last_success'").fetchone()
+ if cache:
+  try:
+   if (datetime.now(timezone.utc)-datetime.fromisoformat(cache["value"])).total_seconds()<SCAVIO_CACHE_HOURS*3600:
+    c.close(); return 0
+  except Exception: pass
+ products=[dict(x) for x in c.execute("SELECT * FROM products WHERE retailer='Target' AND seller_verified=1 ORDER BY popularity_score DESC,last_seen DESC LIMIT 3")]
+ c.close()
+ checked=0
+ for product in products:
+  match=re.search(r"(?:/A-|tcin=)(\d{6,12})",product.get("url",""),re.I)
+  if not match: continue
+  data=scavio_post("/api/v1/target/availability",{"tcin":match.group(1),"zip":ZIP,"radius":RADIUS})
+  if not data: continue
+  stores=data["data"].get("stores",[])
+  db=conn()
+  for item in stores:
+   name=str(item.get("name") or item.get("store_name") or "Target").strip()
+   address=str(item.get("address") or item.get("formatted_address") or "").strip()
+   city=str(item.get("city") or "").strip()
+   state=str(item.get("state") or "VA").strip()
+   postcode=str(item.get("zip") or item.get("postal_code") or ZIP).strip()
+   lat=item.get("latitude") or item.get("lat")
+   lon=item.get("longitude") or item.get("lon") or item.get("lng")
+   row=None
+   if item.get("store_id"):
+    row=db.execute("SELECT * FROM stores WHERE retailer='Target' AND (source_url LIKE ? OR name LIKE ?) LIMIT 1",
+      ("%"+str(item["store_id"])+"%", "%"+name+"%")).fetchone()
+   if not row and address:
+    row=db.execute("SELECT * FROM stores WHERE retailer='Target' AND lower(address)=lower(?) LIMIT 1",(address,)).fetchone()
+   if not row and postcode and city:
+    row=db.execute("SELECT * FROM stores WHERE retailer='Target' AND postcode=? AND lower(city)=lower(?) LIMIT 1",(postcode,city)).fetchone()
+   if not row and lat is not None and lon is not None and address:
+    try:
+     cur=db.execute("INSERT OR IGNORE INTO stores(retailer,name,address,city,state,postcode,lat,lon,distance,source,source_url,checked_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+      ("Target",name,address,city,state,postcode,float(lat),float(lon),float(item.get("distance_miles") or item.get("distance") or 0),"Scavio",str(item.get("store_id") or ""),now()))
+     row=db.execute("SELECT * FROM stores WHERE retailer='Target' AND name=? AND lat=? AND lon=?",(name,float(lat),float(lon))).fetchone()
+    except Exception: row=None
+   if not row: continue
+   in_store=item.get("in_store")
+   qty=item.get("quantity")
+   if in_store is True or (isinstance(qty,(int,float)) and qty>0): status="in_stock"
+   elif in_store is False or (isinstance(qty,(int,float)) and qty<=0): status="out_of_stock"
+   else: status="unknown"
+   label=(f"Scavio reports {qty} units" if qty is not None else "Scavio in-store status; unit count unavailable")
+   detail="Scavio Target availability endpoint; "+str(item.get("pickup") or item.get("curbside") or "store-level result")
+   db.execute("""INSERT INTO store_inventory(store_id,product_url,product_title,status,quantity,quantity_label,source_url,detail,checked_at)
+    VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(store_id,product_url) DO UPDATE SET product_title=excluded.product_title,status=excluded.status,quantity=excluded.quantity,quantity_label=excluded.quantity_label,source_url=excluded.source_url,detail=excluded.detail,checked_at=excluded.checked_at""",
+    (row["id"],product["url"],product["title"],status,qty if isinstance(qty,(int,float)) else None,label,product["url"],detail,now()))
+   db.execute("INSERT INTO store_inventory_checks(store_id,status,checked_at,detail) VALUES(?,?,?,?) ON CONFLICT(store_id) DO UPDATE SET status=excluded.status,checked_at=excluded.checked_at,detail=excluded.detail",
+    (row["id"],"checked",now(),"Scavio Target availability: live product/store result"))
+  db.commit(); db.close(); checked+=1
+ if checked:
+  db=conn(); db.execute("INSERT INTO settings(key,value) VALUES('scavio_target_inventory_last_success',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",(now(),)); db.commit(); db.close()
+ log.info("Scavio Target store inventory: %s product availability calls completed",checked)
+ return checked
+
 def search_products(retailer, progress_callback=None):
  scavio_found=scavio_products_for_retailer(retailer,progress_callback)
  global GOOGLE_RATE_LIMITED
@@ -927,7 +990,8 @@ def scan_store_inventory(progress_callback=None):
   c.execute("INSERT INTO store_inventory_checks(store_id,status,checked_at,detail) VALUES(?,?,?,?) ON CONFLICT(store_id) DO UPDATE SET status=excluded.status,checked_at=excluded.checked_at,detail=excluded.detail",(store["id"],state_value,now(),detail))
   c.commit(); checked+=1
  c.close()
- return {"confirmed_products":confirmed,"message":f"Browser-based retailer scan: {checked} Target branches visited; {confirmed} confirmed product/store listings in stock; {unknown} unknown; {errors} branch errors; {unsupported} other retailer branches not yet supported."}
+ scavio_checked=scavio_target_inventory()
+ return {"confirmed_products":confirmed,"message":f"Browser-based retailer scan: {checked} Target branches visited; {confirmed} confirmed product/store listings in stock; {unknown} unknown; {errors} branch errors; {unsupported} other retailer branches not yet supported. Scavio Target availability refreshed for {scavio_checked} products."}
 
 def update_scan_progress(run_id, progress, phase, current=0, total=0):
  c=conn()
