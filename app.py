@@ -606,7 +606,20 @@ def scavio_refresh_partner_inventory():
   if not recent: db.execute("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",(key,now()))
  db.commit()
  counts={"Costco":0,"Sam's Club":0,"Dollar General":0}
- products={r:[dict(x) for x in db.execute("SELECT * FROM products WHERE retailer=? AND seller_verified=1 ORDER BY popularity_score DESC,last_seen DESC LIMIT ?",(r,SCAVIO_MAX_PRODUCTS_PER_RETAILER))] for r in counts}
+ # Choose confirmed in-stock Pokémon TCG listings first, then unknown stock.
+ # Never spend branch-lookup credits on products already marked out of stock.
+ # Require the retailer-specific ID needed for a meaningful lookup.
+ products={}
+ for r in counts:
+  identifier="scavio_upc" if r=="Dollar General" else "scavio_item_id"
+  products[r]=[dict(x) for x in db.execute(
+   f"""SELECT * FROM products WHERE retailer=? AND seller_verified=1
+   AND availability IN ('in_stock','unknown')
+   AND {identifier} IS NOT NULL AND TRIM({identifier})!=''
+   AND (lower(title) LIKE '%pokemon%' OR lower(title) LIKE '%pokémon%')
+   ORDER BY CASE availability WHEN 'in_stock' THEN 0 ELSE 1 END,
+   popularity_score DESC,last_seen DESC LIMIT ?""",
+   (r,SCAVIO_MAX_PRODUCTS_PER_RETAILER))]
  wr=db.execute("SELECT value FROM settings WHERE key='scavio_costco_warehouses'").fetchone(); db.close()
  warehouses=[]
  if wr:
@@ -686,7 +699,15 @@ def scavio_target_inventory():
   except Exception: pass
  c.execute("INSERT INTO settings(key,value) VALUES('scavio_target_inventory_last_attempt',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",(now(),))
  c.commit()
- products=[dict(x) for x in c.execute("SELECT * FROM products WHERE retailer='Target' AND seller_verified=1 ORDER BY popularity_score DESC,last_seen DESC LIMIT 3")]
+ # Prioritize in-stock Pokémon cards before unknown availability; skip sold-out
+ # listings and URLs without a TCIN so all three calls can be useful.
+ candidates=[dict(x) for x in c.execute("""SELECT * FROM products
+ WHERE retailer='Target' AND seller_verified=1
+ AND availability IN ('in_stock','unknown')
+ AND (lower(title) LIKE '%pokemon%' OR lower(title) LIKE '%pokémon%')
+ ORDER BY CASE availability WHEN 'in_stock' THEN 0 ELSE 1 END,
+ popularity_score DESC,last_seen DESC LIMIT 100""")]
+ products=[p for p in candidates if re.search(r"(?:/A-|tcin=)(\d{6,12})",p.get("url",""),re.I)][:3]
  c.close()
  checked=0
  for product in products:
