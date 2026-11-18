@@ -23,7 +23,7 @@ jobs:
           python-version: "3.12"
       - name: Install scanner dependencies
         run: python -m pip install --disable-pip-version-check Flask requests beautifulsoup4 curl_cffi
-      - name: Run bounded live retailer discovery
+      - name: Run full live retailer discovery
         run: |
           python - <<'PY'
           import app
@@ -34,7 +34,7 @@ jobs:
           for retailer in app.RETAILERS:
               print(f"\\n===== {retailer} =====", flush=True)
               try:
-                  products = app.search_products(retailer, max_candidates=12)
+                  products = app.search_products(retailer)
                   results.append({
                       "retailer": retailer,
                       "verified_products": len(products),
