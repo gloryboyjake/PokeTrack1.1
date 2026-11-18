@@ -212,13 +212,14 @@ def conn():
     for name,decl in [("progress","INTEGER NOT NULL DEFAULT 0"),("phase","TEXT NOT NULL DEFAULT ''"),("current","INTEGER NOT NULL DEFAULT 0"),("total","INTEGER NOT NULL DEFAULT 0")]:
      if name not in scan_cols: c.execute(f"ALTER TABLE poketrack_scan_runs ADD COLUMN {name} {decl}")
     cols={r[1] for r in c.execute("PRAGMA table_info(products)")}
-    for name,decl in [("last_checked","TEXT NOT NULL DEFAULT ''"),("seller_verified","INTEGER NOT NULL DEFAULT 0"),("seller_name","TEXT"),("popularity_score","INTEGER NOT NULL DEFAULT 0"),("popularity_reason","TEXT"),("discovery_sources","TEXT"),("stock_checked_at","TEXT"),("monitor_enabled","INTEGER NOT NULL DEFAULT 1"),("check_interval_seconds","INTEGER NOT NULL DEFAULT 1800"),("next_check_at","TEXT"),("last_status_change","TEXT"),("catalog_product_id","INTEGER")]:
+    for name,decl in [("last_checked","TEXT NOT NULL DEFAULT ''"),("seller_verified","INTEGER NOT NULL DEFAULT 0"),("seller_name","TEXT"),("popularity_score","INTEGER NOT NULL DEFAULT 0"),("popularity_reason","TEXT"),("discovery_sources","TEXT"),("stock_checked_at","TEXT"),("monitor_enabled","INTEGER NOT NULL DEFAULT 1"),("check_interval_seconds","INTEGER NOT NULL DEFAULT 1800"),("next_check_at","TEXT"),("last_status_change","TEXT"),("catalog_product_id","INTEGER"),("last_confirmed_availability","TEXT NOT NULL DEFAULT ''")]:
      if name not in cols: c.execute(f"ALTER TABLE products ADD COLUMN {name} {decl}")
     # A worker thread cannot survive a Railway container restart. Close stale
     # running rows so the dashboard never displays a permanently frozen scan.
     c.execute("UPDATE poketrack_scan_runs SET status='interrupted',finished_at=?,phase='Interrupted by service restart' WHERE status='running'",(now(),))
     stamp=now()
     c.execute("UPDATE products SET check_interval_seconds=CASE WHEN popularity_score>=25 THEN 300 WHEN popularity_score>=15 THEN 600 ELSE 1800 END,next_check_at=CASE WHEN next_check_at IS NULL OR next_check_at='' THEN ? ELSE next_check_at END WHERE seller_verified=1",(stamp,))
+    c.execute("UPDATE products SET last_confirmed_availability=availability WHERE last_confirmed_availability='' AND availability IN ('in_stock','out_of_stock')")
     for listing in c.execute("SELECT id,title FROM products WHERE catalog_product_id IS NULL").fetchall():
      normalized=normalize_product_title(listing["title"])
      if not normalized: continue
@@ -317,21 +318,34 @@ def is_pokemon_tcg_title(title):
  return bool(re.search(r'trading card|\btc[g]?\b|booster|elite trainer|\betb\b|blister|tin|deck|card pack|card game|pokemon cards|pokémon cards',title))
 def verify_retailer_seller(retailer, page_text):
  text=(page_text or "").lower()
- aliases={"Target":("target",),"Walmart":("walmart",),"Best Buy":("best buy","bestbuy")}
+ # Extract seller identities from common JSON-LD and retailer page patterns.
  sellers=re.findall(r'"seller"\s*:\s*\{[^{}]*?"name"\s*:\s*"([^"]+)"',text,re.I)
+ sellers+=re.findall(r'"seller"\s*:\s*"([^"]+)"',text,re.I)
+ sellers+=re.findall(r'"sellerName"\s*:\s*"([^"]+)"',text,re.I)
  sellers+=re.findall(r'sold\s*(?:and|&)\s*shipped\s*by\s+([a-z0-9 .&-]{2,60})',text,re.I)
  sellers+=re.findall(r'sold by\s+([a-z0-9 .&-]{2,60})',text,re.I)
+ def key(value):
+  return re.sub(r"[^a-z0-9]+","",str(value or "").lower())
+ aliases={
+  "Target":{"target","targetcom"},
+  "Walmart":{"walmart","walmartcom"},
+  "Best Buy":{"bestbuy","bestbuycom"},
+  "Sam's Club":{"samsclub","samsclubcom"},
+  "Walgreens":{"walgreens","walgreenscom"},
+  "Barnes & Noble":{"barnesnoble","barnesandnoble","barnesnoblecom","barnesandnoblecom"},
+  "Amazon":{"amazon","amazoncom"}
+ }
  sellers=[re.sub(r"\s+"," ",x).strip(" .,:;") for x in sellers]
  if sellers:
-  expected=aliases.get(retailer,(retailer.lower(),))
-  if any(any(alias in name.lower() for alias in expected) for name in sellers):
+  allowed=aliases.get(retailer,{key(retailer),key(retailer)+"com"})
+  if any(key(name) in allowed for name in sellers):
    return True,retailer
   return False,None
  if re.search(r"more options from marketplace sellers|marketplace only|third.party seller|sold by a third party|fulfilled by a third party",text):
   return False,None
- # Do not silently treat an unnamed offer as first-party on marketplaces.
- # Walmart, Target, Best Buy, and Amazon must expose an explicit retailer seller.
- if retailer in ("Walmart","Target","Best Buy","Amazon"):
+ # Marketplace-capable retailers must expose an explicit seller identity.
+ # A retailer-owned URL alone is not enough to establish who fulfills the offer.
+ if retailer in aliases:
   return False,None
  return True,"retailer-owned domain (no marketplace seller indicated)"
 
@@ -776,9 +790,10 @@ def monitor_due_products(progress_callback=None, limit=60):
   if new_status!=old_status: changed+=1
   checked_at=now(); interval=product_check_interval(product.get('popularity_score'))
   due=(datetime.now(timezone.utc)+timedelta(seconds=interval)).isoformat()
-  c.execute("""UPDATE products SET availability=?,last_checked=?,stock_checked_at=?,check_interval_seconds=?,next_check_at=?,last_status_change=CASE WHEN availability<>? THEN ? ELSE last_status_change END WHERE id=?""",(new_status,checked_at,checked_at,interval,due,new_status,checked_at,product['id']))
+  confirmed_old=product.get('last_confirmed_availability') or (old_status if old_status in ('in_stock','out_of_stock') else 'unknown')
+  c.execute("""UPDATE products SET availability=?,last_confirmed_availability=CASE WHEN ? IN ('in_stock','out_of_stock') THEN ? ELSE last_confirmed_availability END,last_checked=?,stock_checked_at=?,check_interval_seconds=?,next_check_at=?,last_status_change=CASE WHEN availability<>? THEN ? ELSE last_status_change END WHERE id=?""",(new_status,new_status,new_status,checked_at,checked_at,interval,due,new_status,checked_at,product['id']))
   c.execute("INSERT INTO product_stock_history(product_id,checked_at,status,price,source,evidence) VALUES(?,?,?,?,?,?)",(product['id'],checked_at,new_status,product.get('price'),'retailer product page',evidence[:500]))
-  if old_status=='out_of_stock' and new_status=='in_stock':
+  if confirmed_old=='out_of_stock' and new_status=='in_stock':
    c.execute("INSERT INTO restock_events(product_id,retailer,title,url,detected_at,previous_status,current_status) VALUES(?,?,?,?,?,?,?)",(product['id'],product['retailer'],product['title'],product['url'],checked_at,old_status,new_status))
    restocks+=1
   checked+=1
