@@ -33,6 +33,7 @@ jobs:
           python - <<'PY'
           import app
           import json
+          import os
           import sys
           assert app.is_pokemon_tcg_title("Pokémon Mega Evolution Phantasmal Flames Elite Trainer Box")
           assert app.is_pokemon_tcg_title("Pokémon Scarlet & Violet Booster Bundle")
