@@ -138,7 +138,7 @@ def scan_retailer(retailer, catalog_url, seed_urls, domain):
         "closeCookieModals": True,
         "customData": {"retailer": retailer, "domain": domain},
     }
-    cap = os.getenv("APIFY_MAX_TOTAL_CHARGE_USD", "").strip()
+    cap = os.getenv("APIFY_MAX_TOTAL_CHARGE_USD", "0.25").strip()
     query = {"waitForFinish": "60"}
     if cap:
         query["maxTotalChargeUsd"] = cap
