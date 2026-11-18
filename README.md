@@ -10,6 +10,7 @@ A single Flask application and dashboard for discovering Pokémon TCG product li
 - ZIP geocoding: Zippopotam.us with US Census fallback for the origin ZIP
 - Product discovery: retailer-owned catalog pages, sitemaps, curated product URLs, and public search-index results used only to nominate candidate retailer URLs
 - Product monitoring: a separate due-product scheduler checks verified retailer-owned URLs, prioritizes popular products, records stock history, and logs confirmed out-of-stock to in-stock transitions
+- Product catalog: retailer-specific offers are grouped under a normalized master product; Track All enables current offers and automatically follows future discovered retailer offers
 - Missing products: API-backed request queue for product names and optional retailer URLs
 - Map services: none
 
@@ -38,6 +39,8 @@ The current researched directory includes Target, Walmart, Best Buy, Costco, Hob
 - `POST /api/scan?kind=products` — discover and refresh retailer product listings
 - `POST /api/scan?kind=discover` — run catalog discovery without store inventory checks
 - `POST /api/scan?kind=monitor` — check only due, first-party-verified product URLs
+- `GET /api/catalog` — grouped master products with retailer-specific offers
+- `POST /api/catalog/{id}/track` with `{"enabled": true|false}` — Track All / pause all offers and future auto-follow
 - `GET /api/restock-events` — confirmed out-of-stock to in-stock transitions
 - `GET /api/product-requests` and `POST /api/product-requests` — queue missing product requests
 
